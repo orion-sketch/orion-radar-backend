@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 console.log("STRIPE KEY DEBUG:", process.env.STRIPE_SECRET_KEY)
+console.log("PRICE PLATINUM DEBUG:", process.env.STRIPE_PRICE_PLATINUM);
 
 const express = require("express");
 const cors = require("cors");

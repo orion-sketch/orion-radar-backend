@@ -1,0 +1,32 @@
+{
+  "signals": [
+    {
+      "id": "sig_1001",
+      "symbol": "XAUUSD",
+      "tf": "H1",
+      "side": "SELL",
+      "score": 88,
+      "setup": "OB + FVG + Trend Alignment",
+      "status": "Continuation",
+      "entry": "2045.80",
+      "sl": "2051.20",
+      "tp": "2036.40",
+      "ts": "2026-03-20T12:05:00Z",
+      "filters": ["OB", "FVG"]
+    },
+    {
+      "id": "sig_1002",
+      "symbol": "EURUSD",
+      "tf": "M15",
+      "side": "BUY",
+      "score": 84,
+      "setup": "BOS + Retest",
+      "status": "Confirmed",
+      "entry": "1.08420",
+      "sl": "1.08280",
+      "tp": "1.08750",
+      "ts": "2026-03-20T12:10:00Z",
+      "filters": ["BOS"]
+    }
+  ]
+}

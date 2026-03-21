@@ -1,0 +1,1020 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Orion Radar Pro</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body { background: #020617; }
+    .orion-glow {
+      box-shadow: 0 0 0 1px rgba(34,211,238,0.06), 0 20px 40px rgba(0,0,0,0.35);
+    }
+    .hero-grid {
+      background-image:
+        linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px);
+      background-size: 44px 44px;
+    }
+    .thin-scroll::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    .thin-scroll::-webkit-scrollbar-thumb {
+      background: rgba(148,163,184,0.25);
+      border-radius: 999px;
+    }
+  </style>
+</head>
+
+<body class="text-white">
+  <div id="app"></div>
+
+  <script>
+    const SUPABASE_URL = "https://eyawmevqfeaeioistrqk.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_gqq9Q7awadGyKqxtCWnKbA_LYGMLXnJ";
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    let currentSession = null;
+    let currentProfile = null;
+    let allSignals = [];
+    let selectedSignal = null;
+    let focusedAsset = null;
+    let focusedTimeframe = "M15";
+    let authMode = "signin";
+
+    const TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4"];
+
+    const COUNTRY_CODES = [
+      { code: "US", name: "United States", dial: "+1" },
+      { code: "BR", name: "Brazil", dial: "+55" },
+      { code: "GB", name: "United Kingdom", dial: "+44" },
+      { code: "IT", name: "Italy", dial: "+39" },
+      { code: "PT", name: "Portugal", dial: "+351" },
+      { code: "ES", name: "Spain", dial: "+34" },
+      { code: "FR", name: "France", dial: "+33" },
+      { code: "DE", name: "Germany", dial: "+49" },
+      { code: "CA", name: "Canada", dial: "+1" },
+      { code: "AU", name: "Australia", dial: "+61" }
+    ];
+
+    function titleCase(v) {
+      return String(v || "")
+        .toLowerCase()
+        .split(" ")
+        .map(p => p ? p.charAt(0).toUpperCase() + p.slice(1) : "")
+        .join(" ");
+    }
+
+    function escapeHtml(str) {
+      return String(str || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function showToast(message, tone = "info") {
+      const toneMap = {
+        info: "border-cyan-400/20 bg-cyan-400/10 text-cyan-200",
+        error: "border-rose-400/20 bg-rose-400/10 text-rose-200",
+        success: "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
+      };
+
+      const el = document.createElement("div");
+      el.className = "fixed right-4 top-4 z-[100] rounded-2xl border px-4 py-3 text-sm shadow-2xl " + (toneMap[tone] || toneMap.info);
+      el.innerText = message;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 3600);
+    }
+
+    function normalizeSignals(payload) {
+      const rows = Array.isArray(payload) ? payload : (Array.isArray(payload?.signals) ? payload.signals : []);
+      return rows.map((s, i) => ({
+        id: s.id || "sig_" + (i + 1),
+        symbol: String(s.symbol || "").toUpperCase(),
+        tf: String(s.tf || "M15").toUpperCase(),
+        side: String(s.side || "BUY").toUpperCase(),
+        score: Number(s.score || 80),
+        setup: s.setup || "Signal",
+        status: s.status || "Live",
+        entry: String(s.entry || "-"),
+        sl: String(s.sl || "-"),
+        tp: String(s.tp || "-"),
+        ts: s.ts || new Date().toISOString(),
+        filters: Array.isArray(s.filters) ? s.filters : []
+      }));
+    }
+
+    function formatDate(v) {
+      try {
+        return new Date(v).toLocaleString();
+      } catch {
+        return v || "-";
+      }
+    }
+
+    function onlyDigits(v) {
+      return String(v || "").replace(/\D/g, "");
+    }
+
+    function onlyLettersAndSpaces(v) {
+      return String(v || "").replace(/[^a-zA-ZÀ-ÿ\s]/g, "");
+    }
+
+    function getCountryDial(countryCode) {
+      return COUNTRY_CODES.find(c => c.code === countryCode)?.dial || "+1";
+    }
+
+    function formatPhoneByCountry(countryCode, rawValue) {
+      const dial = getCountryDial(countryCode);
+      const digits = onlyDigits(rawValue).slice(0, 15);
+      return dial + (digits ? " " + digits : "");
+    }
+
+    function setPhonePrefixFromCountry() {
+      const country = document.getElementById("auth_country")?.value || "US";
+      const phoneInput = document.getElementById("auth_phone");
+      if (!phoneInput) return;
+
+      const currentDigits = onlyDigits(phoneInput.value);
+      const dialDigits = onlyDigits(getCountryDial(country));
+      let localDigits = currentDigits;
+
+      if (currentDigits.startsWith(dialDigits)) {
+        localDigits = currentDigits.slice(dialDigits.length);
+      }
+
+      phoneInput.value = formatPhoneByCountry(country, localDigits);
+    }
+
+    function goTo(path) {
+      history.pushState({}, "", path);
+      boot();
+    }
+
+    async function getSession() {
+      const { data } = await supabaseClient.auth.getSession();
+      currentSession = data.session || null;
+      return currentSession;
+    }
+
+    async function loadProfile() {
+      if (!currentSession?.user?.id) {
+        currentProfile = null;
+        return null;
+      }
+
+      const { data, error } = await supabaseClient
+        .from("profiles")
+        .select("*")
+        .eq("id", currentSession.user.id)
+        .single();
+
+      if (error) {
+        currentProfile = null;
+        return null;
+      }
+
+      currentProfile = data;
+      return data;
+    }
+
+    async function updateProfile(values) {
+      if (!currentSession?.user?.id) return;
+
+      const payload = {
+        ...values,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error } = await supabaseClient
+        .from("profiles")
+        .update(payload)
+        .eq("id", currentSession.user.id);
+
+      if (error) {
+        showToast(error.message, "error");
+        return;
+      }
+
+      await loadProfile();
+      showToast("Profile updated.", "success");
+      renderDashboard();
+    }
+
+    function getUserDisplayName() {
+      if (currentProfile?.full_name) return titleCase(currentProfile.full_name);
+      const user = currentSession?.user;
+      if (!user) return "Trader";
+      const metaName = user.user_metadata?.full_name || user.user_metadata?.name;
+      if (metaName) return titleCase(metaName);
+      return titleCase((user.email || "Trader").split("@")[0]);
+    }
+
+    function renderTopNav(loggedIn) {
+      return `
+        <header class="sticky top-0 z-30 border-b border-white/10 bg-slate-950/90 backdrop-blur">
+          <div class="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-4">
+            <button onclick="goTo('/')" class="flex items-center gap-3">
+              <div class="rounded-2xl bg-cyan-400/15 px-3 py-2 text-cyan-300">Orion</div>
+              <div class="text-left">
+                <div class="font-semibold text-white">Orion Radar Pro</div>
+                <div class="text-xs text-slate-400">Signals • Dashboard • Plans</div>
+              </div>
+            </button>
+
+            <div class="flex items-center gap-3">
+              ${loggedIn ? `
+                <button onclick="goTo('/dashboard')" class="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white">
+                  Dashboard
+                </button>
+                <button onclick="logout()" class="rounded-2xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950">
+                  Sign Out
+                </button>
+              ` : `
+                <button onclick="openAuthModal('signin')" class="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white">
+                  Sign In
+                </button>
+                <button onclick="openAuthModal('signup')" class="rounded-2xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950">
+                  Get Started
+                </button>
+              `}
+            </div>
+          </div>
+        </header>
+      `;
+    }
+
+    function imageCard(src, title, subtitle) {
+      return `
+        <div class="overflow-hidden rounded-[28px] border border-white/10 bg-slate-900/70 shadow-xl">
+          <div class="h-[250px] bg-slate-950">
+            <img src="${src}" alt="${escapeHtml(title)}" class="h-full w-full object-cover"
+              onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+            <div class="hidden h-full items-center justify-center bg-slate-950 text-slate-500">
+              Add image: ${escapeHtml(src)}
+            </div>
+          </div>
+          <div class="p-5">
+            <div class="text-lg font-bold">${escapeHtml(title)}</div>
+            <div class="mt-2 text-sm text-slate-400">${escapeHtml(subtitle)}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function heroStat(label, value) {
+      return `
+        <div class="rounded-2xl border border-white/10 bg-black/20 px-4 py-4">
+          <div class="text-xs uppercase tracking-wide text-slate-400">${escapeHtml(label)}</div>
+          <div class="mt-2 text-lg font-bold text-white">${escapeHtml(value)}</div>
+        </div>
+      `;
+    }
+
+    function planCard(name, price, desc, items, highlight) {
+      return `
+        <div class="rounded-[28px] border border-white/10 bg-slate-900/70 p-5 shadow-xl flex flex-col">
+          <div class="text-xl font-bold ${highlight ? "text-cyan-300" : "text-white"}">${escapeHtml(name)}</div>
+          <div class="mt-2 text-3xl font-bold">${escapeHtml(price)}</div>
+          <div class="mt-2 text-sm text-slate-400 min-h-[48px]">${escapeHtml(desc)}</div>
+
+          <div class="mt-5 space-y-2 text-sm text-slate-200 flex-1">
+            ${items.map(item => `<div>• ${escapeHtml(item)}</div>`).join("")}
+          </div>
+
+          <button onclick="openAuthModal('signup', '${name}')" class="mt-6 w-full rounded-2xl px-4 py-3 font-semibold min-h-[52px] ${highlight ? "bg-cyan-400 text-slate-950" : "border border-white/10 bg-white/5 text-white"}">
+            Start With ${escapeHtml(name)}
+          </button>
+        </div>
+      `;
+    }
+
+    function renderHome() {
+      const loggedIn = !!currentSession;
+
+      document.getElementById("app").innerHTML = `
+        ${renderTopNav(loggedIn)}
+
+        <main>
+          <section class="hero-grid mx-auto max-w-[1400px] px-6 py-10">
+            <div class="rounded-[36px] border border-white/10 bg-gradient-to-br from-cyan-500/15 to-blue-500/10 p-8 shadow-2xl">
+              <div class="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
+                <div>
+                  <div class="mb-3 inline-flex rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs text-slate-200">
+                    Professional Signal Delivery
+                  </div>
+                  <h1 class="text-5xl font-bold tracking-tight">Monitor Your Assets, Focus One Chart, Trade With Structure</h1>
+                  <p class="mt-4 max-w-3xl text-lg text-slate-300">
+                    Orion Radar Pro lets each user choose assets, filters, and indicators by subscription level,
+                    while the dashboard keeps one focused chart view for clean execution.
+                  </p>
+                  <div class="mt-6 flex flex-wrap gap-3">
+                    <button onclick="${loggedIn ? "goTo('/dashboard')" : "openAuthModal('signup')"}" class="rounded-2xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950">
+                      ${loggedIn ? "Open Dashboard" : "Create Account"}
+                    </button>
+                    <button onclick="document.getElementById('plans').scrollIntoView({behavior:'smooth'})" class="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 font-semibold text-white">
+                      View Plans
+                    </button>
+                  </div>
+                </div>
+
+                <div class="grid gap-3 sm:grid-cols-2">
+                  ${heroStat("Bronze", "1 Asset • 1 Filter • 1 Indicator")}
+                  ${heroStat("Silver", "3 Assets • 3 Filters • 3 Indicators")}
+                  ${heroStat("Gold", "5 Assets • 5 Filters • 4 Indicators")}
+                  ${heroStat("Platinum", "10 Assets • 10 Filters • 5 Indicators + Fibonacci")}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="mx-auto max-w-[1400px] px-6 pb-10">
+            <div class="mb-5">
+              <h2 class="text-3xl font-bold">System Preview</h2>
+              <p class="mt-2 text-slate-400">Use real screenshots from your own system to make the landing page feel premium and trustworthy.</p>
+            </div>
+
+            <div class="grid gap-4 lg:grid-cols-3">
+              ${imageCard("assets/preview-dashboard.png", "Dashboard Preview", "Focused chart, clean signal panel, and monitored asset workflow.")}
+              ${imageCard("assets/preview-signals.png", "Signal Feed Preview", "Multi-asset signal delivery organized in a clean operational view.")}
+              ${imageCard("assets/preview-billing.png", "Plans And Billing", "Professional onboarding, pricing, account access, and subscription flow.")}
+            </div>
+          </section>
+
+          <section id="plans" class="mx-auto max-w-[1400px] px-6 pb-10">
+            <div class="mb-5">
+              <h2 class="text-3xl font-bold">Choose Your Plan</h2>
+              <p class="mt-2 text-slate-400">The plan is saved in your profile and will be used in payment next.</p>
+            </div>
+
+            <div class="grid gap-4 lg:grid-cols-4">
+              ${planCard("Bronze", "$29/Mo", "Good starting point for focused monitoring.", ["1 Asset", "1 Filter", "1 Indicator", "Telegram: No"], false)}
+              ${planCard("Silver", "$59/Mo", "Balanced access for active users.", ["3 Assets", "3 Filters", "3 Indicators", "Telegram: No"], false)}
+              ${planCard("Gold", "$99/Mo", "Expanded monitoring with Telegram delivery.", ["5 Assets", "5 Filters", "4 Indicators", "Telegram: Yes"], false)}
+              ${planCard("Platinum", "$129/Mo", "Maximum flexibility, premium tools, Fibonacci access.", ["10 Assets", "10 Filters", "5 Indicators", "Telegram: Yes", "Fibonacci Access"], true)}
+            </div>
+          </section>
+        </main>
+
+        <div id="authModalRoot"></div>
+      `;
+    }
+
+    function openAuthModal(mode = "signin", plan = "Bronze") {
+      authMode = mode;
+      renderAuthModal(plan);
+      if (mode === "signup") {
+        setTimeout(() => setPhonePrefixFromCountry(), 0);
+      }
+    }
+
+    function closeAuthModal() {
+      const root = document.getElementById("authModalRoot");
+      if (root) root.innerHTML = "";
+    }
+
+    function renderAuthModal(plan = "Bronze") {
+      const root = document.getElementById("authModalRoot");
+      if (!root) return;
+
+      root.innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div class="w-full max-w-md rounded-[28px] border border-white/10 bg-slate-900 p-6 shadow-2xl">
+            <div class="mb-5 flex items-start justify-between">
+              <div>
+                <div class="text-2xl font-bold text-white">${authMode === "signup" ? "Create Account" : "Sign In"}</div>
+                <div class="mt-1 text-sm text-slate-400">${authMode === "signup" ? "Enter your details to create access." : "Access your dashboard with email and password."}</div>
+              </div>
+              <button onclick="closeAuthModal()" class="rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-slate-300">✕</button>
+            </div>
+
+            <div class="mb-5 flex rounded-2xl border border-white/10 bg-black/20 p-1">
+              <button onclick="switchAuthMode('signin')" class="flex-1 rounded-xl px-3 py-2 text-sm font-semibold ${authMode === "signin" ? "bg-cyan-400 text-slate-950" : "text-slate-300"}">
+                Sign In
+              </button>
+              <button onclick="switchAuthMode('signup')" class="flex-1 rounded-xl px-3 py-2 text-sm font-semibold ${authMode === "signup" ? "bg-cyan-400 text-slate-950" : "text-slate-300"}">
+                Sign Up
+              </button>
+            </div>
+
+            <div class="space-y-4">
+              ${authMode === "signup" ? `
+                <div>
+                  <label class="mb-2 block text-sm text-slate-400">Full Name</label>
+                  <input id="auth_name" placeholder="Your Full Name" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500" />
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm text-slate-400">Country</label>
+                  <select id="auth_country" onchange="setPhonePrefixFromCountry()" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none">
+                    ${COUNTRY_CODES.map(c => `<option value="${c.code}" ${c.code === "US" ? "selected" : ""}>${c.name} (${c.dial})</option>`).join("")}
+                  </select>
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm text-slate-400">Phone</label>
+                  <input id="auth_phone" oninput="handlePhoneInput()" placeholder="+1" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500" />
+                </div>
+
+                <div>
+                  <label class="mb-2 block text-sm text-slate-400">Plan</label>
+                  <select id="auth_plan" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none">
+                    <option ${plan === "Bronze" ? "selected" : ""}>Bronze</option>
+                    <option ${plan === "Silver" ? "selected" : ""}>Silver</option>
+                    <option ${plan === "Gold" ? "selected" : ""}>Gold</option>
+                    <option ${plan === "Platinum" ? "selected" : ""}>Platinum</option>
+                  </select>
+                </div>
+              ` : ""}
+
+              <div>
+                <label class="mb-2 block text-sm text-slate-400">Email</label>
+                <input id="auth_email" type="email" placeholder="name@email.com" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500" />
+              </div>
+
+              <div>
+                <label class="mb-2 block text-sm text-slate-400">Password</label>
+                <input id="auth_password" type="password" placeholder="••••••••" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500" />
+              </div>
+
+              ${authMode === "signup" ? `
+                <div>
+                  <label class="mb-2 block text-sm text-slate-400">Confirm Password</label>
+                  <input id="auth_confirm_password" type="password" placeholder="••••••••" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500" />
+                </div>
+              ` : ""}
+
+              <button onclick="${authMode === "signup" ? "signUp()" : "signIn()"}" class="w-full rounded-2xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950">
+                ${authMode === "signup" ? "Create Account" : "Login"}
+              </button>
+
+              ${authMode === "signin" ? `
+                <button onclick="forgotPassword()" class="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 font-semibold text-white">
+                  Forgot Password
+                </button>
+              ` : `
+                <div class="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-400">
+                  If this email already exists, use Sign In or Forgot Password.
+                </div>
+              `}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function switchAuthMode(mode) {
+      authMode = mode;
+      renderAuthModal();
+      if (mode === "signup") {
+        setTimeout(() => setPhonePrefixFromCountry(), 0);
+      }
+    }
+
+    function handlePhoneInput() {
+      const country = document.getElementById("auth_country")?.value || "US";
+      const phoneInput = document.getElementById("auth_phone");
+      if (!phoneInput) return;
+
+      const dialDigits = onlyDigits(getCountryDial(country));
+      let digits = onlyDigits(phoneInput.value);
+
+      if (digits.startsWith(dialDigits)) {
+        digits = digits.slice(dialDigits.length);
+      }
+
+      phoneInput.value = formatPhoneByCountry(country, digits);
+    }
+
+    function validateAuthInputs() {
+      const email = document.getElementById("auth_email")?.value?.trim() || "";
+      const password = document.getElementById("auth_password")?.value || "";
+      const name = document.getElementById("auth_name")?.value?.trim() || "";
+      const country = document.getElementById("auth_country")?.value || "US";
+      const phone = document.getElementById("auth_phone")?.value?.trim() || "";
+      const plan = document.getElementById("auth_plan")?.value || "Bronze";
+      const confirmPassword = document.getElementById("auth_confirm_password")?.value || "";
+
+      if (authMode === "signup" && !name) {
+        showToast("Fill in your full name first.", "error");
+        return null;
+      }
+
+      if (authMode === "signup" && !phone) {
+        showToast("Fill in your phone first.", "error");
+        return null;
+      }
+
+      if (authMode === "signup" && onlyDigits(phone).length < 8) {
+        showToast("Enter a valid phone number.", "error");
+        return null;
+      }
+
+      if (!email || !email.includes("@")) {
+        showToast("Enter a valid email.", "error");
+        return null;
+      }
+
+      if (!password || password.length < 6) {
+        showToast("Password must have at least 6 characters.", "error");
+        return null;
+      }
+
+      if (authMode === "signup" && password !== confirmPassword) {
+        showToast("Passwords do not match.", "error");
+        return null;
+      }
+
+      return { name, country, phone, plan, email, password };
+    }
+
+    async function signUp() {
+      const values = validateAuthInputs();
+      if (!values) return;
+
+      const { name, country, phone, plan, email, password } = values;
+
+      const { data, error } = await supabaseClient.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: "http://localhost:3000/dashboard",
+          data: {
+            full_name: name,
+            country,
+            phone,
+            selected_plan: plan
+          }
+        }
+      });
+
+      if (error) {
+        const msg = String(error.message || "");
+        if (msg.toLowerCase().includes("already") || msg.toLowerCase().includes("registered") || msg.toLowerCase().includes("exists")) {
+          showToast("This email is already registered. Try signing in or resetting your password.", "error");
+          switchAuthMode("signin");
+          const emailInput = document.getElementById("auth_email");
+          if (emailInput) emailInput.value = email;
+          return;
+        }
+
+        showToast(error.message, "error");
+        return;
+      }
+
+      if (!data?.user) {
+        showToast("Could not create account. Try again.", "error");
+        return;
+      }
+
+      closeAuthModal();
+      showToast("Account created. Confirm your email if confirmation is enabled.", "success");
+    }
+
+    async function signIn() {
+      const values = validateAuthInputs();
+      if (!values) return;
+
+      const { email, password } = values;
+
+      const { data, error } = await supabaseClient.auth.signInWithPassword({
+        email,
+        password
+      });
+
+      if (error) {
+        showToast(error.message, "error");
+        return;
+      }
+
+      currentSession = data.session || null;
+      await loadProfile();
+      closeAuthModal();
+      goTo("/dashboard");
+    }
+
+    async function forgotPassword() {
+      const email = document.getElementById("auth_email")?.value?.trim() || "";
+
+      if (!email || !email.includes("@")) {
+        showToast("Enter your email first.", "error");
+        return;
+      }
+
+      const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+        redirectTo: "http://localhost:3000/reset-password"
+      });
+
+      if (error) {
+        showToast(error.message, "error");
+        return;
+      }
+
+      closeAuthModal();
+      showToast("Password reset email sent.", "success");
+    }
+
+    async function logout() {
+      await supabaseClient.auth.signOut();
+      currentSession = null;
+      currentProfile = null;
+      goTo("/");
+    }
+
+    async function loadSignals() {
+      try {
+        const res = await fetch("/api/signals?t=" + Date.now(), { cache: "no-store" });
+        const data = await res.json();
+        allSignals = normalizeSignals(data);
+      } catch {
+        allSignals = [];
+      }
+    }
+
+    function renderResetPasswordPage() {
+      document.getElementById("app").innerHTML = `
+        ${renderTopNav(false)}
+
+        <main class="mx-auto max-w-[700px] px-6 py-16">
+          <div class="rounded-[32px] border border-white/10 bg-slate-900/80 p-8 shadow-2xl">
+            <h1 class="text-3xl font-bold">Reset Password</h1>
+            <p class="mt-2 text-slate-400">Enter your new password below.</p>
+
+            <div class="mt-6 space-y-4">
+              <div>
+                <label class="mb-2 block text-sm text-slate-400">New Password</label>
+                <input id="new_password" type="password" placeholder="••••••••" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500" />
+              </div>
+
+              <div>
+                <label class="mb-2 block text-sm text-slate-400">Confirm New Password</label>
+                <input id="confirm_new_password" type="password" placeholder="••••••••" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500" />
+              </div>
+
+              <button onclick="updatePassword()" class="w-full rounded-2xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950">
+                Update Password
+              </button>
+            </div>
+          </div>
+        </main>
+      `;
+    }
+
+    async function updatePassword() {
+      const password = document.getElementById("new_password")?.value || "";
+      const confirm = document.getElementById("confirm_new_password")?.value || "";
+
+      if (!password || password.length < 6) {
+        showToast("Password must have at least 6 characters.", "error");
+        return;
+      }
+
+      if (password !== confirm) {
+        showToast("Passwords do not match.", "error");
+        return;
+      }
+
+      const { error } = await supabaseClient.auth.updateUser({
+        password
+      });
+
+      if (error) {
+        showToast(error.message, "error");
+        return;
+      }
+
+      showToast("Password updated. Sign in again.", "success");
+      setTimeout(() => goTo("/"), 1200);
+    }
+
+    function signalCard(signal) {
+      return `
+        <button onclick="selectSignalById('${signal.id}')" class="w-full rounded-2xl border p-4 text-left ${selectedSignal && selectedSignal.id === signal.id ? "border-cyan-400/40 bg-cyan-400/10" : "border-white/10 bg-slate-950/50"}">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-semibold">${escapeHtml(signal.symbol)} • ${escapeHtml(signal.tf)}</div>
+              <div class="text-sm text-slate-400">${escapeHtml(signal.setup)}</div>
+            </div>
+            <div class="${signal.side === "BUY" ? "text-emerald-400" : "text-rose-400"} font-bold">
+              ${escapeHtml(signal.side)}
+            </div>
+          </div>
+          <div class="mt-3 flex items-center justify-between">
+            <span class="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-300">${escapeHtml(signal.status)}</span>
+            <span class="text-sm font-semibold text-cyan-300">Score ${signal.score}</span>
+          </div>
+        </button>
+      `;
+    }
+
+    function infoCard(label, value) {
+      return `
+        <div class="mb-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+          <div class="text-xs uppercase tracking-wide text-slate-500">${escapeHtml(label)}</div>
+          <div class="mt-1 font-semibold text-white">${escapeHtml(value)}</div>
+        </div>
+      `;
+    }
+
+    function renderDashboard() {
+      if (!currentSession) {
+        goTo("/");
+        return;
+      }
+
+      const userName = getUserDisplayName();
+
+      if (!focusedAsset && allSignals.length) {
+        focusedAsset = allSignals[0].symbol;
+      }
+
+      const visibleSignals = focusedAsset ? allSignals.filter(s => s.symbol === focusedAsset) : allSignals;
+      const signal = selectedSignal && selectedSignal.symbol === focusedAsset
+        ? selectedSignal
+        : (visibleSignals[0] || allSignals[0] || null);
+
+      if (signal) {
+        selectedSignal = signal;
+      }
+
+      document.getElementById("app").innerHTML = `
+        ${renderTopNav(true)}
+
+        <main class="mx-auto max-w-[1500px] px-6 py-8">
+          <section class="mb-6 rounded-[32px] border border-white/10 bg-gradient-to-br from-cyan-500/15 to-blue-500/10 p-6 shadow-xl">
+            <div class="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div class="mb-2 inline-flex rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs text-slate-200">
+                  ${escapeHtml(currentProfile?.active_plan || "Pending")}
+                </div>
+                <h1 class="text-4xl font-bold tracking-tight">Welcome, ${escapeHtml(userName)}</h1>
+                <p class="mt-2 text-slate-300">
+                  Billing: ${escapeHtml(currentProfile?.billing_status || "Pending")} • Expiration: ${escapeHtml(currentProfile?.expiration_date ? formatDate(currentProfile.expiration_date) : "Pending")}
+                </p>
+              </div>
+              <div class="grid gap-3 sm:grid-cols-3">
+                ${heroStat("Selected Plan", currentProfile?.selected_plan || "-")}
+                ${heroStat("Active Plan", currentProfile?.active_plan || "-")}
+                ${heroStat("Telegram", currentProfile?.telegram_enabled ? "Enabled" : "Disabled")}
+              </div>
+            </div>
+          </section>
+
+          <div class="grid gap-6 xl:grid-cols-[320px_1fr]">
+            <aside class="space-y-6">
+              <div class="rounded-[28px] border border-white/10 bg-slate-900/70 p-5 shadow-xl">
+                <div class="mb-4 text-sm font-semibold text-slate-200">Profile</div>
+                <div class="space-y-4">
+                  <div>
+                    <label class="mb-2 block text-sm text-slate-400">Full Name</label>
+                    <input id="profile_full_name" value="${escapeHtml(currentProfile?.full_name || "")}" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none" />
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm text-slate-400">Phone</label>
+                    <input id="profile_phone" value="${escapeHtml(currentProfile?.phone || "")}" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none" />
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm text-slate-400">Selected Plan</label>
+                    <select id="profile_selected_plan" class="min-h-[52px] w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none">
+                      <option ${(currentProfile?.selected_plan || "") === "Bronze" ? "selected" : ""}>Bronze</option>
+                      <option ${(currentProfile?.selected_plan || "") === "Silver" ? "selected" : ""}>Silver</option>
+                      <option ${(currentProfile?.selected_plan || "") === "Gold" ? "selected" : ""}>Gold</option>
+                      <option ${(currentProfile?.selected_plan || "") === "Platinum" ? "selected" : ""}>Platinum</option>
+                    </select>
+                  </div>
+
+                  <button onclick="saveProfileChanges()" class="w-full rounded-2xl bg-cyan-400 px-4 py-3 font-semibold text-slate-950">
+                    Save Profile
+                  </button>
+                </div>
+              </div>
+
+              <div class="rounded-[28px] border border-white/10 bg-slate-900/70 p-5 shadow-xl">
+                <div class="mb-4 text-sm font-semibold text-slate-200">Focused Asset</div>
+                <div class="flex flex-wrap gap-2">
+                  ${[...new Set(allSignals.map(s => s.symbol))].map(asset => `
+                    <button onclick="selectAsset('${asset}')" class="rounded-2xl border px-3 py-2 text-sm font-medium ${focusedAsset === asset ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-200" : "border-white/10 bg-white/5 text-slate-200"}">
+                      ${asset}
+                    </button>
+                  `).join("")}
+                </div>
+              </div>
+            </aside>
+
+            <main class="space-y-6">
+              <section class="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+                <div class="rounded-[28px] border border-white/10 bg-slate-900/70 p-4 shadow-xl">
+                  <div class="mb-4 flex items-center justify-between">
+                    <div>
+                      <div class="text-xl font-bold">Chart View</div>
+                      <div class="text-sm text-slate-400">One focused asset at a time.</div>
+                    </div>
+                    <div class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
+                      Live Feed
+                    </div>
+                  </div>
+
+                  <div class="mb-3 flex flex-wrap gap-2">
+                    ${TIMEFRAMES.map(tf => `
+                      <button onclick="changeTimeframe('${tf}')" class="rounded-xl border px-3 py-2 text-sm ${focusedTimeframe === tf ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-200" : "border-white/10 bg-white/5 text-slate-200"}">
+                        ${tf}
+                      </button>
+                    `).join("")}
+                  </div>
+
+                  <div class="relative h-[520px] overflow-hidden rounded-xl border border-white/10 bg-black orion-glow">
+                    <div id="chart" class="h-full w-full"></div>
+                  </div>
+                </div>
+
+                <div class="rounded-[28px] border border-white/10 bg-slate-900/70 p-5 shadow-xl">
+                  <div class="mb-4 text-xl font-bold">Signal Details</div>
+                  ${signal ? `
+                    ${infoCard("Type", signal.side)}
+                    ${infoCard("Asset", focusedAsset || signal.symbol)}
+                    ${infoCard("Timeframe", focusedTimeframe)}
+                    ${infoCard("Entry", signal.entry)}
+                    ${infoCard("Stop", signal.sl)}
+                    ${infoCard("Target", signal.tp)}
+                    ${infoCard("Score", String(signal.score))}
+                    ${infoCard("Status", signal.status)}
+                    ${infoCard("Filters", signal.filters.join(", ") || "-")}
+                    ${infoCard("Timestamp", formatDate(signal.ts))}
+                  ` : `<div class="rounded-2xl border border-white/10 bg-black/20 p-4 text-slate-400">No signal selected.</div>`}
+                </div>
+              </section>
+
+              <section class="rounded-[28px] border border-white/10 bg-slate-900/70 p-6 shadow-xl">
+                <div class="mb-4 flex items-center justify-between">
+                  <h2 class="text-2xl font-bold">Live Signals</h2>
+                  <div class="rounded-full bg-emerald-400/10 px-3 py-1 text-xs text-emerald-300">
+                    ${allSignals.length} Total
+                  </div>
+                </div>
+
+                <div class="space-y-3">
+                  ${allSignals.length ? allSignals.map(s => signalCard(s)).join("") : `<div class="rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">No live signals available.</div>`}
+                </div>
+              </section>
+            </main>
+          </div>
+        </main>
+      `;
+
+      renderChart();
+    }
+
+    async function saveProfileChanges() {
+      const full_name = document.getElementById("profile_full_name")?.value?.trim() || "";
+      const phone = document.getElementById("profile_phone")?.value?.trim() || "";
+      const selected_plan = document.getElementById("profile_selected_plan")?.value || "Bronze";
+
+      await updateProfile({
+        full_name,
+        phone,
+        selected_plan
+      });
+    }
+
+    function selectAsset(asset) {
+      focusedAsset = asset;
+      const firstSignal = allSignals.find(s => s.symbol === asset);
+      if (firstSignal) {
+        selectedSignal = firstSignal;
+        focusedTimeframe = firstSignal.tf || focusedTimeframe;
+      }
+      renderDashboard();
+    }
+
+    function selectSignalById(id) {
+      const signal = allSignals.find(s => s.id === id);
+      if (!signal) return;
+      selectedSignal = signal;
+      focusedAsset = signal.symbol;
+      focusedTimeframe = signal.tf || focusedTimeframe;
+      renderDashboard();
+    }
+
+    function changeTimeframe(tf) {
+      focusedTimeframe = tf;
+      renderDashboard();
+    }
+
+    function renderChart() {
+      const container = document.getElementById("chart");
+      if (!container || !focusedAsset) return;
+
+      container.innerHTML = "";
+
+      const script = document.createElement("script");
+      script.type = "text/javascript";
+      script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+      script.async = true;
+
+      const symbolMap = {
+        XAUUSD: "OANDA:XAUUSD",
+        EURUSD: "FX:EURUSD",
+        GBPUSD: "FX:GBPUSD",
+        USDJPY: "FX:USDJPY",
+        AUDUSD: "FX:AUDUSD",
+        USDCAD: "FX:USDCAD",
+        USDCHF: "FX:USDCHF",
+        NZDUSD: "FX:NZDUSD",
+        BTCUSD: "BITSTAMP:BTCUSD",
+        ETHUSD: "BITSTAMP:ETHUSD",
+        US100: "OANDA:NAS100USD",
+        US500: "OANDA:SPX500USD",
+        NAS100: "OANDA:NAS100USD",
+        US30: "OANDA:US30USD",
+        GER40: "CAPITALCOM:DE40",
+        UK100: "CAPITALCOM:UK100"
+      };
+
+      const intervalMap = {
+        M1: "1",
+        M5: "5",
+        M15: "15",
+        M30: "30",
+        H1: "60",
+        H4: "240"
+      };
+
+      script.innerHTML = JSON.stringify({
+        autosize: true,
+        symbol: symbolMap[focusedAsset] || focusedAsset,
+        interval: intervalMap[focusedTimeframe] || "15",
+        timezone: "Etc/UTC",
+        theme: "dark",
+        style: "1",
+        locale: "en",
+        enable_publishing: false,
+        allow_symbol_change: true,
+        hide_top_toolbar: false,
+        hide_legend: false,
+        calendar: false,
+        support_host: "https://www.tradingview.com"
+      });
+
+      container.appendChild(script);
+    }
+
+    async function boot() {
+      await getSession();
+
+      const hash = window.location.hash || "";
+      const search = window.location.search || "";
+      const path = window.location.pathname;
+
+      if (
+        path === "/reset-password" ||
+        hash.includes("type=recovery") ||
+        search.includes("type=recovery") ||
+        hash.includes("access_token") ||
+        search.includes("access_token")
+      ) {
+        history.replaceState({}, "", "/reset-password");
+        renderResetPasswordPage();
+        return;
+      }
+
+      if (path === "/dashboard") {
+        await loadSignals();
+
+        if (!currentSession) {
+          showToast("Sign in first to access the dashboard.", "error");
+          history.replaceState({}, "", "/");
+          renderHome();
+          openAuthModal("signin");
+          return;
+        }
+
+        await loadProfile();
+        renderDashboard();
+        return;
+      }
+
+      renderHome();
+    }
+
+    window.addEventListener("popstate", boot);
+
+    supabaseClient.auth.onAuthStateChange(async (event, session) => {
+      currentSession = session || null;
+
+      if (event === "PASSWORD_RECOVERY") {
+        history.replaceState({}, "", "/reset-password");
+        renderResetPasswordPage();
+        return;
+      }
+    });
+
+    boot();
+  </script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+console.log("STRIPE KEY DEBUG:", process.env.STRIPE_SECRET_KEY)
+
 const express = require("express");
 const cors = require("cors");
 const Stripe = require("stripe");

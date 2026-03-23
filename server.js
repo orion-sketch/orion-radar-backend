@@ -1,19 +1,15 @@
-require("dotenv").config();
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import Stripe from "stripe";
+import { createClient } from "@supabase/supabase-js";
 
-console.log("STRIPE KEY DEBUG:", process.env.STRIPE_SECRET_KEY)
-console.log("PRICE PLATINUM DEBUG:", process.env.STRIPE_PRICE_PLATINUM);
-console.log("PRICE DEBUG:", process.env.STRIPE_PRICE_PLATINUM);
-
-const express = require("express");
-const cors = require("cors");
-const Stripe = require("stripe");
-const { createClient } = require("@supabase/supabase-js");
+dotenv.config();
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
 const {
-  PORT = 10000,
-  NODE_ENV = "development",
   FRONTEND_URL,
   STRIPE_SECRET_KEY,
   STRIPE_WEBHOOK_SECRET,
@@ -25,132 +21,494 @@ const {
   STRIPE_PRICE_PLATINUM,
 } = process.env;
 
+if (!FRONTEND_URL) throw new Error("Missing FRONTEND_URL");
 if (!STRIPE_SECRET_KEY) throw new Error("Missing STRIPE_SECRET_KEY");
+if (!STRIPE_WEBHOOK_SECRET) throw new Error("Missing STRIPE_WEBHOOK_SECRET");
 if (!SUPABASE_URL) throw new Error("Missing SUPABASE_URL");
 if (!SUPABASE_SERVICE_ROLE_KEY) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
-if (!FRONTEND_URL) throw new Error("Missing FRONTEND_URL");
 
 const stripe = new Stripe(STRIPE_SECRET_KEY);
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
 });
 
-app.use(
-  cors({
-    origin: [
-      FRONTEND_URL,
-      "http://localhost:3000",
-      "http://localhost:5173",
-    ],
-    credentials: true,
-  })
-);
-
-app.post(
-  "/stripe/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    try {
-      const signature = req.headers["stripe-signature"];
-      const event = stripe.webhooks.constructEvent(
-        req.body,
-        signature,
-        STRIPE_WEBHOOK_SECRET
-      );
-
-      switch (event.type) {
-        case "checkout.session.completed":
-          console.log("checkout.session.completed");
-          break;
-        case "customer.subscription.created":
-        case "customer.subscription.updated":
-        case "customer.subscription.deleted":
-        case "invoice.payment_succeeded":
-        case "invoice.payment_failed":
-          console.log("Webhook event:", event.type);
-          break;
-        default:
-          console.log("Unhandled event:", event.type);
-      }
-
-      return res.json({ received: true });
-    } catch (err) {
-      console.error("Webhook error:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-  }
-);
-
-app.use(express.json());
-
-const PLANS = {
+const PLAN_PRICE_MAP = {
   bronze: STRIPE_PRICE_BRONZE,
   silver: STRIPE_PRICE_SILVER,
   gold: STRIPE_PRICE_GOLD,
   platinum: STRIPE_PRICE_PLATINUM,
 };
 
-app.get("/", (req, res) => {
+function normalizePlan(plan) {
+  if (!plan) return null;
+  const p = String(plan).trim().toLowerCase();
+  return ["bronze", "silver", "gold", "platinum"].includes(p) ? p : null;
+}
+
+function getPlanFromPriceId(priceId) {
+  const found = Object.entries(PLAN_PRICE_MAP).find(([, value]) => value === priceId);
+  return found ? found[0] : null;
+}
+
+function mapStripeStatus(status) {
+  switch (status) {
+    case "active":
+    case "trialing":
+      return "active";
+    case "past_due":
+      return "past_due";
+    case "canceled":
+    case "unpaid":
+    case "incomplete":
+    case "incomplete_expired":
+    default:
+      return "inactive";
+  }
+}
+
+function unixToIso(unixSeconds) {
+  if (!unixSeconds) return null;
+  return new Date(unixSeconds * 1000).toISOString();
+}
+
+async function findProfileByUserId(userId) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
+async function findProfileByCustomerId(customerId) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("stripe_customer_id", customerId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
+async function findProfileBySubscriptionId(subscriptionId) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("stripe_subscription_id", subscriptionId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
+async function updateProfileBilling({
+  userId,
+  email,
+  selectedPlan,
+  activePlan,
+  billingStatus,
+  stripeCustomerId,
+  stripeSubscriptionId,
+  stripePriceId,
+  currentPeriodStart,
+  currentPeriodEnd,
+  cancelAtPeriodEnd,
+}) {
+  let existing = null;
+
+  if (userId) existing = await findProfileByUserId(userId);
+  if (!existing && stripeCustomerId) existing = await findProfileByCustomerId(stripeCustomerId);
+  if (!existing && stripeSubscriptionId) existing = await findProfileBySubscriptionId(stripeSubscriptionId);
+
+  if (!existing && !userId) {
+    throw new Error("Profile not found and no userId provided");
+  }
+
+  const payload = {
+    id: existing?.id || userId,
+    email: email ?? existing?.email ?? null,
+    selected_plan: selectedPlan ?? existing?.selected_plan ?? null,
+    active_plan: activePlan ?? existing?.active_plan ?? null,
+    billing_status: billingStatus ?? existing?.billing_status ?? "inactive",
+    stripe_customer_id: stripeCustomerId ?? existing?.stripe_customer_id ?? null,
+    stripe_subscription_id: stripeSubscriptionId ?? existing?.stripe_subscription_id ?? null,
+    stripe_price_id: stripePriceId ?? existing?.stripe_price_id ?? null,
+    current_period_start: currentPeriodStart ?? existing?.current_period_start ?? null,
+    current_period_end: currentPeriodEnd ?? existing?.current_period_end ?? null,
+    cancel_at_period_end: cancelAtPeriodEnd ?? existing?.cancel_at_period_end ?? false,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .upsert(payload, { onConflict: "id" })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+app.use(
+  cors({
+    origin: [FRONTEND_URL],
+    credentials: true,
+  })
+);
+
+app.get("/", (_req, res) => {
   res.json({
     ok: true,
-    app: "ORION RADAR PRO",
-    env: NODE_ENV,
+    service: "ORION RADAR PRO API",
     timestamp: new Date().toISOString(),
   });
 });
 
-app.get("/health", (req, res) => {
-  res.json({ ok: true });
+app.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true });
 });
+
+app.get("/billing/success", (req, res) => {
+  const sessionId = req.query.session_id || "";
+  res.send(`
+    <html>
+      <body style="font-family: Arial, sans-serif; padding: 40px;">
+        <h1>Pagamento realizado com sucesso</h1>
+        <p>Sua assinatura foi processada.</p>
+        <p>Session ID: ${sessionId}</p>
+      </body>
+    </html>
+  `);
+});
+
+app.get("/billing/cancel", (_req, res) => {
+  res.send(`
+    <html>
+      <body style="font-family: Arial, sans-serif; padding: 40px;">
+        <h1>Pagamento cancelado</h1>
+        <p>Você pode tentar novamente quando quiser.</p>
+      </body>
+    </html>
+  `);
+});
+
+app.post(
+  "/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    let event;
+
+    try {
+      const signature = req.headers["stripe-signature"];
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        signature,
+        STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("Webhook signature error:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    try {
+      switch (event.type) {
+        case "checkout.session.completed": {
+          const session = event.data.object;
+
+          const customerId = session.customer || null;
+          const subscriptionId = session.subscription || null;
+          const userId = session.metadata?.user_id || null;
+          const selectedPlan = normalizePlan(session.metadata?.plan);
+          const email =
+            session.customer_details?.email ||
+            session.metadata?.email ||
+            null;
+
+          let activePlan = null;
+          let billingStatus = "active";
+          let stripePriceId = null;
+          let currentPeriodStart = null;
+          let currentPeriodEnd = null;
+          let cancelAtPeriodEnd = false;
+
+          if (subscriptionId) {
+            const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
+              expand: ["items.data.price"],
+            });
+
+            stripePriceId = subscription.items?.data?.[0]?.price?.id || null;
+            activePlan =
+              normalizePlan(subscription.metadata?.plan) ||
+              getPlanFromPriceId(stripePriceId) ||
+              selectedPlan;
+
+            billingStatus = mapStripeStatus(subscription.status);
+            currentPeriodStart = unixToIso(subscription.current_period_start);
+            currentPeriodEnd = unixToIso(subscription.current_period_end);
+            cancelAtPeriodEnd = subscription.cancel_at_period_end || false;
+          } else {
+            activePlan = selectedPlan;
+          }
+
+          await updateProfileBilling({
+            userId,
+            email,
+            selectedPlan,
+            activePlan,
+            billingStatus,
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscriptionId,
+            stripePriceId,
+            currentPeriodStart,
+            currentPeriodEnd,
+            cancelAtPeriodEnd,
+          });
+
+          break;
+        }
+
+        case "customer.subscription.created":
+        case "customer.subscription.updated": {
+          const subscription = event.data.object;
+
+          const customerId = subscription.customer;
+          const subscriptionId = subscription.id;
+          const stripePriceId = subscription.items?.data?.[0]?.price?.id || null;
+
+          let profile = await findProfileByCustomerId(customerId);
+
+          // fallback crítico: usar metadata do Stripe caso customer_id ainda
+          // não tenha sido salvo no profiles quando esse evento chegar
+          if (!profile) {
+            const userIdFromMetadata = subscription.metadata?.user_id || null;
+            if (userIdFromMetadata) {
+              profile = await findProfileByUserId(userIdFromMetadata);
+            }
+          }
+
+          const activePlan =
+            normalizePlan(subscription.metadata?.plan) ||
+            getPlanFromPriceId(stripePriceId);
+
+          await updateProfileBilling({
+            userId: profile?.id || null,
+            email: profile?.email || null,
+            selectedPlan: profile?.selected_plan || activePlan,
+            activePlan,
+            billingStatus: mapStripeStatus(subscription.status),
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscriptionId,
+            stripePriceId,
+            currentPeriodStart: unixToIso(subscription.current_period_start),
+            currentPeriodEnd: unixToIso(subscription.current_period_end),
+            cancelAtPeriodEnd: subscription.cancel_at_period_end || false,
+          });
+
+          break;
+        }
+
+        case "customer.subscription.deleted": {
+          const subscription = event.data.object;
+          const customerId = subscription.customer;
+          const subscriptionId = subscription.id;
+
+          let profile = await findProfileByCustomerId(customerId);
+
+          if (!profile) {
+            const userIdFromMetadata = subscription.metadata?.user_id || null;
+            if (userIdFromMetadata) {
+              profile = await findProfileByUserId(userIdFromMetadata);
+            }
+          }
+
+          await updateProfileBilling({
+            userId: profile?.id || null,
+            email: profile?.email || null,
+            selectedPlan: profile?.selected_plan || null,
+            activePlan: null,
+            billingStatus: "inactive",
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscriptionId,
+            stripePriceId: null,
+            currentPeriodStart: null,
+            currentPeriodEnd: null,
+            cancelAtPeriodEnd: false,
+          });
+
+          break;
+        }
+
+        case "invoice.payment_failed": {
+          const invoice = event.data.object;
+          const customerId = invoice.customer;
+
+          let profile = await findProfileByCustomerId(customerId);
+
+          if (!profile) {
+            const subscriptionId =
+              typeof invoice.subscription === "string"
+                ? invoice.subscription
+                : invoice.subscription?.id || null;
+
+            if (subscriptionId) {
+              profile = await findProfileBySubscriptionId(subscriptionId);
+            }
+          }
+
+          if (profile) {
+            await updateProfileBilling({
+              userId: profile.id,
+              email: profile.email,
+              selectedPlan: profile.selected_plan,
+              activePlan: profile.active_plan,
+              billingStatus: "past_due",
+              stripeCustomerId: profile.stripe_customer_id,
+              stripeSubscriptionId: profile.stripe_subscription_id,
+              stripePriceId: profile.stripe_price_id,
+              currentPeriodStart: profile.current_period_start,
+              currentPeriodEnd: profile.current_period_end,
+              cancelAtPeriodEnd: profile.cancel_at_period_end,
+            });
+          }
+
+          break;
+        }
+
+        default:
+          console.log("Unhandled event:", event.type);
+      }
+
+      return res.json({ received: true });
+    } catch (err) {
+      console.error("Webhook processing error:", err);
+      return res.status(500).json({
+        error: "Webhook handler failed",
+        details: err.message,
+      });
+    }
+  }
+);
+
+app.use(express.json());
 
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const { plan, userId, email } = req.body;
 
-    if (!plan || !userId || !email) {
-      return res.status(400).json({
-        error: "plan, userId e email são obrigatórios",
+    const normalizedPlan = normalizePlan(plan);
+    if (!normalizedPlan) {
+      return res.status(400).json({ error: "Invalid plan" });
+    }
+
+    const priceId = PLAN_PRICE_MAP[normalizedPlan];
+    if (!priceId) {
+      return res.status(400).json({ error: "Price not configured for this plan" });
+    }
+
+    let customerId = null;
+
+    if (userId) {
+      const profile = await findProfileByUserId(userId);
+
+      if (!profile) {
+        return res.status(404).json({ error: "Profile not found" });
+      }
+
+      customerId = profile.stripe_customer_id || null;
+
+      await updateProfileBilling({
+        userId,
+        email: email || profile.email || null,
+        selectedPlan: normalizedPlan,
+        activePlan: profile.active_plan,
+        billingStatus: profile.billing_status || "inactive",
+        stripeCustomerId: profile.stripe_customer_id,
+        stripeSubscriptionId: profile.stripe_subscription_id,
+        stripePriceId: profile.stripe_price_id,
+        currentPeriodStart: profile.current_period_start,
+        currentPeriodEnd: profile.current_period_end,
+        cancelAtPeriodEnd: profile.cancel_at_period_end,
       });
     }
 
-    const priceId = PLANS[String(plan).toLowerCase()];
-
-    if (!priceId) {
-      return res.status(400).json({
-        error: "Plano inválido",
+    if (!customerId && email) {
+      const customers = await stripe.customers.list({
+        email,
+        limit: 1,
       });
+      customerId = customers.data?.[0]?.id || null;
     }
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
+      customer: customerId || undefined,
+      customer_email: customerId ? undefined : email,
       payment_method_types: ["card"],
-      line_items: [{ price: priceId, quantity: 1 }],
-      customer_email: email,
-      success_url: `${FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${FRONTEND_URL}/pricing?canceled=true`,
-      client_reference_id: userId,
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1,
+        },
+      ],
       metadata: {
-        user_id: userId,
-        plan_key: plan,
-        app: "orion_radar_pro",
+        user_id: userId || "",
+        email: email || "",
+        plan: normalizedPlan,
       },
       subscription_data: {
         metadata: {
-          user_id: userId,
-          plan_key: plan,
-          app: "orion_radar_pro",
+          user_id: userId || "",
+          email: email || "",
+          plan: normalizedPlan,
         },
       },
+      success_url: `${FRONTEND_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${FRONTEND_URL}/billing/cancel`,
+      allow_promotion_codes: true,
     });
 
-    return res.status(200).json({
-      url: session.url,
-      sessionId: session.id,
-    });
+    return res.json({ url: session.url });
   } catch (err) {
     console.error("create-checkout-session error:", err);
     return res.status(500).json({
-      error: "Erro ao criar checkout session",
+      error: "Could not create checkout session",
+      details: err.message,
+    });
+  }
+});
+
+app.post("/create-customer-portal-session", async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
+    const profile = await findProfileByUserId(userId);
+
+    if (!profile?.stripe_customer_id) {
+      return res.status(404).json({ error: "Stripe customer not found" });
+    }
+
+    const portalSession = await stripe.billingPortal.sessions.create({
+      customer: profile.stripe_customer_id,
+      return_url: `${FRONTEND_URL}/dashboard`,
+    });
+
+    return res.json({ url: portalSession.url });
+  } catch (err) {
+    console.error("create-customer-portal-session error:", err);
+    return res.status(500).json({
+      error: "Could not create portal session",
       details: err.message,
     });
   }
@@ -159,25 +517,83 @@ app.post("/create-checkout-session", async (req, res) => {
 app.get("/subscription-status/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    const profile = await findProfileByUserId(userId);
 
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("id, email, plan, plan_status, stripe_customer_id, stripe_subscription_id")
-      .eq("id", userId)
-      .single();
+    if (!profile) {
+      return res.status(404).json({ error: "Profile not found" });
+    }
 
-    if (error) throw error;
-
-    return res.json({ ok: true, subscription: data });
+    return res.json({
+      id: profile.id,
+      email: profile.email,
+      selected_plan: profile.selected_plan,
+      active_plan: profile.active_plan,
+      billing_status: profile.billing_status,
+      stripe_customer_id: profile.stripe_customer_id,
+      stripe_subscription_id: profile.stripe_subscription_id,
+      stripe_price_id: profile.stripe_price_id,
+      current_period_start: profile.current_period_start,
+      current_period_end: profile.current_period_end,
+      cancel_at_period_end: profile.cancel_at_period_end,
+    });
   } catch (err) {
     console.error("subscription-status error:", err);
     return res.status(500).json({
-      error: "Erro ao consultar assinatura",
+      error: "Could not fetch subscription status",
+      details: err.message,
+    });
+  }
+});
+
+app.post("/sync-subscription", async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
+
+    const profile = await findProfileByUserId(userId);
+
+    if (!profile?.stripe_subscription_id) {
+      return res.status(404).json({ error: "No subscription found" });
+    }
+
+    const subscription = await stripe.subscriptions.retrieve(
+      profile.stripe_subscription_id,
+      { expand: ["items.data.price"] }
+    );
+
+    const stripePriceId = subscription.items?.data?.[0]?.price?.id || null;
+    const activePlan =
+      normalizePlan(subscription.metadata?.plan) ||
+      getPlanFromPriceId(stripePriceId) ||
+      profile.active_plan;
+
+    const updated = await updateProfileBilling({
+      userId: profile.id,
+      email: profile.email,
+      selectedPlan: profile.selected_plan || activePlan,
+      activePlan,
+      billingStatus: mapStripeStatus(subscription.status),
+      stripeCustomerId: subscription.customer,
+      stripeSubscriptionId: subscription.id,
+      stripePriceId,
+      currentPeriodStart: unixToIso(subscription.current_period_start),
+      currentPeriodEnd: unixToIso(subscription.current_period_end),
+      cancelAtPeriodEnd: subscription.cancel_at_period_end || false,
+    });
+
+    return res.json({ ok: true, profile: updated });
+  } catch (err) {
+    console.error("sync-subscription error:", err);
+    return res.status(500).json({
+      error: "Could not sync subscription",
       details: err.message,
     });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 ORION RADAR PRO API running on port ${PORT}`);
+  console.log(`ORION RADAR PRO API running on port ${PORT}`);
 });

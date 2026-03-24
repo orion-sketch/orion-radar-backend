@@ -1,11 +1,11 @@
 {
   "name": "orion-radar-backend",
   "version": "1.0.0",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "type": "commonjs",
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",
     "cors": "^2.8.5",

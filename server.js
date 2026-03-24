@@ -76,11 +76,20 @@ function unixToIso(unixSeconds) {
   return new Date(unixSeconds * 1000).toISOString();
 }
 
+function safeStr(value) {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  return s.length ? s : null;
+}
+
 async function findProfileByUserId(userId) {
+  const id = safeStr(userId);
+  if (!id) return null;
+
   const { data, error } = await supabase
     .from("profiles")
     .select("*")
-    .eq("id", userId)
+    .eq("id", id)
     .maybeSingle();
 
   if (error) throw error;
@@ -88,10 +97,13 @@ async function findProfileByUserId(userId) {
 }
 
 async function findProfileByCustomerId(customerId) {
+  const id = safeStr(customerId);
+  if (!id) return null;
+
   const { data, error } = await supabase
     .from("profiles")
     .select("*")
-    .eq("stripe_customer_id", customerId)
+    .eq("stripe_customer_id", id)
     .maybeSingle();
 
   if (error) throw error;
@@ -99,17 +111,50 @@ async function findProfileByCustomerId(customerId) {
 }
 
 async function findProfileBySubscriptionId(subscriptionId) {
+  const id = safeStr(subscriptionId);
+  if (!id) return null;
+
   const { data, error } = await supabase
     .from("profiles")
     .select("*")
-    .eq("stripe_subscription_id", subscriptionId)
+    .eq("stripe_subscription_id", id)
     .maybeSingle();
 
   if (error) throw error;
   return data;
 }
 
-async function updateProfileBilling({
+async function findProfileByEmail(email) {
+  const e = safeStr(email);
+  if (!e) return null;
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("email", e)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
+async function resolveProfile({
+  userId,
+  email,
+  stripeCustomerId,
+  stripeSubscriptionId,
+}) {
+  let profile = null;
+
+  if (userId) profile = await findProfileByUserId(userId);
+  if (!profile && stripeCustomerId) profile = await findProfileByCustomerId(stripeCustomerId);
+  if (!profile && stripeSubscriptionId) profile = await findProfileBySubscriptionId(stripeSubscriptionId);
+  if (!profile && email) profile = await findProfileByEmail(email);
+
+  return profile;
+}
+
+async function saveProfileBilling({
   userId,
   email,
   selectedPlan,
@@ -122,36 +167,81 @@ async function updateProfileBilling({
   currentPeriodEnd,
   cancelAtPeriodEnd,
 }) {
-  let existing = null;
+  const normalizedUserId = safeStr(userId);
+  const normalizedEmail = safeStr(email);
+  const normalizedCustomerId = safeStr(stripeCustomerId);
+  const normalizedSubscriptionId = safeStr(stripeSubscriptionId);
+  const normalizedPriceId = safeStr(stripePriceId);
 
-  if (userId) existing = await findProfileByUserId(userId);
-  if (!existing && stripeCustomerId) existing = await findProfileByCustomerId(stripeCustomerId);
-  if (!existing && stripeSubscriptionId) existing = await findProfileBySubscriptionId(stripeSubscriptionId);
-
-  if (!existing && !userId) {
-    throw new Error("Profile not found and no userId provided");
-  }
+  const existing = await resolveProfile({
+    userId: normalizedUserId,
+    email: normalizedEmail,
+    stripeCustomerId: normalizedCustomerId,
+    stripeSubscriptionId: normalizedSubscriptionId,
+  });
 
   const payload = {
-    id: existing?.id || userId,
-    email: email ?? existing?.email ?? null,
+    email: normalizedEmail ?? existing?.email ?? null,
     selected_plan: selectedPlan ?? existing?.selected_plan ?? null,
     active_plan: activePlan ?? existing?.active_plan ?? null,
     billing_status: billingStatus ?? existing?.billing_status ?? "inactive",
-    stripe_customer_id: stripeCustomerId ?? existing?.stripe_customer_id ?? null,
-    stripe_subscription_id: stripeSubscriptionId ?? existing?.stripe_subscription_id ?? null,
-    stripe_price_id: stripePriceId ?? existing?.stripe_price_id ?? null,
+    stripe_customer_id: normalizedCustomerId ?? existing?.stripe_customer_id ?? null,
+    stripe_subscription_id:
+      normalizedSubscriptionId ?? existing?.stripe_subscription_id ?? null,
+    stripe_price_id: normalizedPriceId ?? existing?.stripe_price_id ?? null,
     current_period_start: currentPeriodStart ?? existing?.current_period_start ?? null,
     current_period_end: currentPeriodEnd ?? existing?.current_period_end ?? null,
-    cancel_at_period_end: cancelAtPeriodEnd ?? existing?.cancel_at_period_end ?? false,
+    cancel_at_period_end:
+      typeof cancelAtPeriodEnd === "boolean"
+        ? cancelAtPeriodEnd
+        : existing?.cancel_at_period_end ?? false,
     updated_at: new Date().toISOString(),
+  };
+
+  console.log("saveProfileBilling -> resolved profile:", existing?.id || null);
+  console.log("saveProfileBilling -> incoming:", {
+    userId: normalizedUserId,
+    email: normalizedEmail,
+    stripeCustomerId: normalizedCustomerId,
+    stripeSubscriptionId: normalizedSubscriptionId,
+    selectedPlan,
+    activePlan,
+    billingStatus,
+    stripePriceId: normalizedPriceId,
+  });
+
+  if (existing?.id) {
+    const { data, error } = await supabase
+      .from("profiles")
+      .update(payload)
+      .eq("id", existing.id)
+      .select()
+      .single();
+
+    console.log("saveProfileBilling -> update result:", data);
+    console.log("saveProfileBilling -> update error:", error);
+
+    if (error) throw error;
+    return data;
+  }
+
+  if (!normalizedUserId) {
+    throw new Error("Could not resolve profile and no userId provided for insert");
+  }
+
+  const insertPayload = {
+    id: normalizedUserId,
+    ...payload,
   };
 
   const { data, error } = await supabase
     .from("profiles")
-    .upsert(payload, { onConflict: "id" })
+    .insert(insertPayload)
     .select()
     .single();
+
+  console.log("saveProfileBilling -> insert result:", data);
+  console.log("saveProfileBilling -> insert error:", error);
 
   if (error) throw error;
   return data;
@@ -200,6 +290,25 @@ app.get("/billing/cancel", (_req, res) => {
   `);
 });
 
+app.get("/debug-env", (_req, res) => {
+  res.json({
+    supabase_url: process.env.SUPABASE_URL,
+    frontend_url: process.env.FRONTEND_URL,
+    has_service_role: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
+    has_webhook_secret: !!process.env.STRIPE_WEBHOOK_SECRET,
+  });
+});
+
+app.get("/debug-profile/:id", async (req, res) => {
+  try {
+    const profile = await findProfileByUserId(req.params.id);
+    res.json({ profile });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post(
   "/stripe/webhook",
   express.raw({ type: "application/json" }),
@@ -219,18 +328,21 @@ app.post(
     }
 
     try {
+      console.log("==== STRIPE WEBHOOK ====");
+      console.log("event.type:", event.type);
+      console.log("event.id:", event.id);
+
       switch (event.type) {
         case "checkout.session.completed": {
           const session = event.data.object;
 
-          const customerId = session.customer || null;
-          const subscriptionId = session.subscription || null;
-          const userId = session.metadata?.user_id || null;
+          const customerId = safeStr(session.customer);
+          const subscriptionId = safeStr(session.subscription);
+          const userId = safeStr(session.metadata?.user_id);
           const selectedPlan = normalizePlan(session.metadata?.plan);
-          const email =
-            session.customer_details?.email ||
-            session.metadata?.email ||
-            null;
+          const email = safeStr(
+            session.customer_details?.email || session.metadata?.email
+          );
 
           let activePlan = null;
           let billingStatus = "active";
@@ -244,7 +356,7 @@ app.post(
               expand: ["items.data.price"],
             });
 
-            stripePriceId = subscription.items?.data?.[0]?.price?.id || null;
+            stripePriceId = safeStr(subscription.items?.data?.[0]?.price?.id);
             activePlan =
               normalizePlan(subscription.metadata?.plan) ||
               getPlanFromPriceId(stripePriceId) ||
@@ -258,7 +370,18 @@ app.post(
             activePlan = selectedPlan;
           }
 
-          await updateProfileBilling({
+          console.log("checkout.session.completed payload:", {
+            userId,
+            email,
+            selectedPlan,
+            activePlan,
+            billingStatus,
+            customerId,
+            subscriptionId,
+            stripePriceId,
+          });
+
+          await saveProfileBilling({
             userId,
             email,
             selectedPlan,
@@ -279,29 +402,30 @@ app.post(
         case "customer.subscription.updated": {
           const subscription = event.data.object;
 
-          const customerId = subscription.customer;
-          const subscriptionId = subscription.id;
-          const stripePriceId = subscription.items?.data?.[0]?.price?.id || null;
-
-          let profile = await findProfileByCustomerId(customerId);
-
-          // fallback crítico: usar metadata do Stripe caso customer_id ainda
-          // não tenha sido salvo no profiles quando esse evento chegar
-          if (!profile) {
-            const userIdFromMetadata = subscription.metadata?.user_id || null;
-            if (userIdFromMetadata) {
-              profile = await findProfileByUserId(userIdFromMetadata);
-            }
-          }
+          const customerId = safeStr(subscription.customer);
+          const subscriptionId = safeStr(subscription.id);
+          const userIdFromMetadata = safeStr(subscription.metadata?.user_id);
+          const emailFromMetadata = safeStr(subscription.metadata?.email);
+          const stripePriceId = safeStr(subscription.items?.data?.[0]?.price?.id);
 
           const activePlan =
             normalizePlan(subscription.metadata?.plan) ||
             getPlanFromPriceId(stripePriceId);
 
-          await updateProfileBilling({
-            userId: profile?.id || null,
-            email: profile?.email || null,
-            selectedPlan: profile?.selected_plan || activePlan,
+          console.log("customer.subscription event payload:", {
+            userIdFromMetadata,
+            emailFromMetadata,
+            activePlan,
+            customerId,
+            subscriptionId,
+            stripePriceId,
+            status: subscription.status,
+          });
+
+          await saveProfileBilling({
+            userId: userIdFromMetadata,
+            email: emailFromMetadata,
+            selectedPlan: activePlan,
             activePlan,
             billingStatus: mapStripeStatus(subscription.status),
             stripeCustomerId: customerId,
@@ -317,22 +441,23 @@ app.post(
 
         case "customer.subscription.deleted": {
           const subscription = event.data.object;
-          const customerId = subscription.customer;
-          const subscriptionId = subscription.id;
 
-          let profile = await findProfileByCustomerId(customerId);
+          const customerId = safeStr(subscription.customer);
+          const subscriptionId = safeStr(subscription.id);
+          const userIdFromMetadata = safeStr(subscription.metadata?.user_id);
+          const emailFromMetadata = safeStr(subscription.metadata?.email);
 
-          if (!profile) {
-            const userIdFromMetadata = subscription.metadata?.user_id || null;
-            if (userIdFromMetadata) {
-              profile = await findProfileByUserId(userIdFromMetadata);
-            }
-          }
+          console.log("customer.subscription.deleted payload:", {
+            userIdFromMetadata,
+            emailFromMetadata,
+            customerId,
+            subscriptionId,
+          });
 
-          await updateProfileBilling({
-            userId: profile?.id || null,
-            email: profile?.email || null,
-            selectedPlan: profile?.selected_plan || null,
+          await saveProfileBilling({
+            userId: userIdFromMetadata,
+            email: emailFromMetadata,
+            selectedPlan: null,
             activePlan: null,
             billingStatus: "inactive",
             stripeCustomerId: customerId,
@@ -348,23 +473,22 @@ app.post(
 
         case "invoice.payment_failed": {
           const invoice = event.data.object;
-          const customerId = invoice.customer;
 
-          let profile = await findProfileByCustomerId(customerId);
+          const customerId = safeStr(invoice.customer);
+          const subscriptionId =
+            typeof invoice.subscription === "string"
+              ? safeStr(invoice.subscription)
+              : safeStr(invoice.subscription?.id);
 
-          if (!profile) {
-            const subscriptionId =
-              typeof invoice.subscription === "string"
-                ? invoice.subscription
-                : invoice.subscription?.id || null;
+          let profile = await resolveProfile({
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscriptionId,
+          });
 
-            if (subscriptionId) {
-              profile = await findProfileBySubscriptionId(subscriptionId);
-            }
-          }
+          console.log("invoice.payment_failed resolved profile:", profile?.id || null);
 
           if (profile) {
-            await updateProfileBilling({
+            await saveProfileBilling({
               userId: profile.id,
               email: profile.email,
               selectedPlan: profile.selected_plan,
@@ -408,6 +532,9 @@ app.post("/create-checkout-session", async (req, res) => {
       return res.status(400).json({ error: "Invalid plan" });
     }
 
+    const normalizedUserId = safeStr(userId);
+    const normalizedEmail = safeStr(email);
+
     const priceId = PLAN_PRICE_MAP[normalizedPlan];
     if (!priceId) {
       return res.status(400).json({ error: "Price not configured for this plan" });
@@ -415,8 +542,8 @@ app.post("/create-checkout-session", async (req, res) => {
 
     let customerId = null;
 
-    if (userId) {
-      const profile = await findProfileByUserId(userId);
+    if (normalizedUserId) {
+      const profile = await findProfileByUserId(normalizedUserId);
 
       if (!profile) {
         return res.status(404).json({ error: "Profile not found" });
@@ -424,9 +551,9 @@ app.post("/create-checkout-session", async (req, res) => {
 
       customerId = profile.stripe_customer_id || null;
 
-      await updateProfileBilling({
-        userId,
-        email: email || profile.email || null,
+      await saveProfileBilling({
+        userId: normalizedUserId,
+        email: normalizedEmail || profile.email || null,
         selectedPlan: normalizedPlan,
         activePlan: profile.active_plan,
         billingStatus: profile.billing_status || "inactive",
@@ -439,18 +566,26 @@ app.post("/create-checkout-session", async (req, res) => {
       });
     }
 
-    if (!customerId && email) {
+    if (!customerId && normalizedEmail) {
       const customers = await stripe.customers.list({
-        email,
+        email: normalizedEmail,
         limit: 1,
       });
       customerId = customers.data?.[0]?.id || null;
     }
 
+    const metadata = {
+      user_id: normalizedUserId,
+      email: normalizedEmail,
+      plan: normalizedPlan,
+    };
+
+    console.log("create-checkout-session metadata:", metadata);
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: customerId || undefined,
-      customer_email: customerId ? undefined : email,
+      customer_email: customerId ? undefined : normalizedEmail || undefined,
       payment_method_types: ["card"],
       line_items: [
         {
@@ -458,17 +593,9 @@ app.post("/create-checkout-session", async (req, res) => {
           quantity: 1,
         },
       ],
-      metadata: {
-        user_id: userId || "",
-        email: email || "",
-        plan: normalizedPlan,
-      },
+      metadata,
       subscription_data: {
-        metadata: {
-          user_id: userId || "",
-          email: email || "",
-          plan: normalizedPlan,
-        },
+        metadata,
       },
       success_url: `${FRONTEND_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${FRONTEND_URL}/billing/cancel`,
@@ -488,12 +615,13 @@ app.post("/create-checkout-session", async (req, res) => {
 app.post("/create-customer-portal-session", async (req, res) => {
   try {
     const { userId } = req.body;
+    const normalizedUserId = safeStr(userId);
 
-    if (!userId) {
+    if (!normalizedUserId) {
       return res.status(400).json({ error: "userId is required" });
     }
 
-    const profile = await findProfileByUserId(userId);
+    const profile = await findProfileByUserId(normalizedUserId);
 
     if (!profile?.stripe_customer_id) {
       return res.status(404).json({ error: "Stripe customer not found" });
@@ -548,12 +676,13 @@ app.get("/subscription-status/:userId", async (req, res) => {
 app.post("/sync-subscription", async (req, res) => {
   try {
     const { userId } = req.body;
+    const normalizedUserId = safeStr(userId);
 
-    if (!userId) {
+    if (!normalizedUserId) {
       return res.status(400).json({ error: "userId is required" });
     }
 
-    const profile = await findProfileByUserId(userId);
+    const profile = await findProfileByUserId(normalizedUserId);
 
     if (!profile?.stripe_subscription_id) {
       return res.status(404).json({ error: "No subscription found" });
@@ -564,13 +693,13 @@ app.post("/sync-subscription", async (req, res) => {
       { expand: ["items.data.price"] }
     );
 
-    const stripePriceId = subscription.items?.data?.[0]?.price?.id || null;
+    const stripePriceId = safeStr(subscription.items?.data?.[0]?.price?.id);
     const activePlan =
       normalizePlan(subscription.metadata?.plan) ||
       getPlanFromPriceId(stripePriceId) ||
       profile.active_plan;
 
-    const updated = await updateProfileBilling({
+    const updated = await saveProfileBilling({
       userId: profile.id,
       email: profile.email,
       selectedPlan: profile.selected_plan || activePlan,

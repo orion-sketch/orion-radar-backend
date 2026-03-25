@@ -295,11 +295,11 @@ app.get("/debug-env", (_req, res) => {
     supabase_url: process.env.SUPABASE_URL,
     frontend_url: process.env.FRONTEND_URL,
     has_service_role: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    has_anon_key: !!process.env.SUPABASE_ANON_KEY,
     has_stripe_key: !!process.env.STRIPE_SECRET_KEY,
     has_webhook_secret: !!process.env.STRIPE_WEBHOOK_SECRET,
   });
 });
-
 app.get("/debug-profile/:id", async (req, res) => {
   try {
     const profile = await findProfileByUserId(req.params.id);
@@ -722,6 +722,123 @@ app.post("/sync-subscription", async (req, res) => {
     });
   }
 });
+
+app.get("/reset-password", (_req, res) => {
+  res.send(`
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Reset Password</title>
+      <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          background: #0f172a;
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 100vh;
+          margin: 0;
+        }
+        .box {
+          background: #111827;
+          padding: 24px;
+          border-radius: 16px;
+          width: 100%;
+          max-width: 420px;
+          box-shadow: 0 10px 30px rgba(0,0,0,.35);
+        }
+        h1 { margin-top: 0; font-size: 24px; }
+        p { color: #cbd5e1; }
+        input {
+          width: 100%;
+          padding: 12px;
+          margin: 8px 0 16px;
+          border-radius: 10px;
+          border: 1px solid #334155;
+          background: #0b1220;
+          color: white;
+          box-sizing: border-box;
+        }
+        button {
+          width: 100%;
+          padding: 12px;
+          border: 0;
+          border-radius: 10px;
+          background: #22c55e;
+          color: white;
+          font-weight: bold;
+          cursor: pointer;
+        }
+        .msg { margin-top: 16px; font-size: 14px; }
+        .ok { color: #4ade80; }
+        .err { color: #f87171; }
+      </style>
+    </head>
+    <body>
+      <div class="box">
+        <h1>Reset your password</h1>
+        <p>Enter your new password below.</p>
+        <form id="resetForm">
+          <input id="password" type="password" placeholder="New password" required />
+          <input id="confirmPassword" type="password" placeholder="Confirm new password" required />
+          <button type="submit">Update password</button>
+        </form>
+        <div id="msg" class="msg"></div>
+      </div>
+
+      <script>
+        const supabaseUrl = ${JSON.stringify(process.env.SUPABASE_URL)};
+        const supabaseAnonKey = ${JSON.stringify(process.env.SUPABASE_ANON_KEY || "")};
+
+        const msg = document.getElementById("msg");
+        const form = document.getElementById("resetForm");
+
+        if (!supabaseUrl || !supabaseAnonKey) {
+          msg.className = "msg err";
+          msg.textContent = "Missing SUPABASE_URL or SUPABASE_ANON_KEY on server.";
+        } else {
+          const client = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+
+          form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            const password = document.getElementById("password").value;
+            const confirmPassword = document.getElementById("confirmPassword").value;
+
+            if (password !== confirmPassword) {
+              msg.className = "msg err";
+              msg.textContent = "Passwords do not match.";
+              return;
+            }
+
+            if (password.length < 6) {
+              msg.className = "msg err";
+              msg.textContent = "Password must be at least 6 characters.";
+              return;
+            }
+
+            const { error } = await client.auth.updateUser({ password });
+
+            if (error) {
+              msg.className = "msg err";
+              msg.textContent = error.message;
+              return;
+            }
+
+            msg.className = "msg ok";
+            msg.textContent = "Password updated successfully. You can log in now.";
+          });
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
 
 app.listen(PORT, () => {
   console.log(`ORION RADAR PRO API running on port ${PORT}`);

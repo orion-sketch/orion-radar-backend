@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ORION RADAR</title>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0b1220;
+      color: white;
+    }
+
+    .screen {
+      min-height: 100vh;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+
+    .screen.active {
+      display: flex;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 440px;
+      background: #111827;
+      border-radius: 16px;
+      padding: 24px;
+      box-sizing: border-box;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+
+    .light {
+      background: #f5f7fb;
+      color: #111827;
+    }
+
+    .light .card {
+      background: white;
+      color: #111827;
+    }
+
+    h1, h2, h3 {
+      margin-top: 0;
+    }
+
+    input, select, button {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      margin: 8px 0;
+      border-radius: 10px;
+      border: 1px solid #d1d5db;
+      font-size: 14px;
+    }
+
+    button {
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button[disabled] {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-success { background: #22c55e; color: white; }
+    .btn-danger { background: #ef4444; color: white; }
+    .btn-dark { background: #1f2937; color: white; }
+
+    .msg {
+      min-height: 20px;
+      font-size: 14px;
+      margin-top: 8px;
+    }
+
+    .muted { color: #cbd5e1; }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .password-wrap {
+      position: relative;
+    }
+
+    .password-wrap input {
+      padding-right: 44px;
+    }
+
+    .toggle-eye {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      cursor: pointer;
+      user-select: none;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    pre {
+      background: #0b1220;
+      color: #e5e7eb;
+      padding: 12px;
+      border-radius: 12px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .plans-layout {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 24px;
+      width: 100%;
+      max-width: 1320px;
+      align-items: start;
+    }
+
+    .plans-left {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .brand-card {
+      background: linear-gradient(180deg, #111827, #0f172a);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+
+    .brand-badge {
+      display: inline-block;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(34, 197, 94, 0.15);
+      color: #4ade80;
+      font-size: 12px;
+      font-weight: bold;
+      margin-bottom: 14px;
+    }
+
+    .brand-subtitle {
+      color: #cbd5e1;
+      line-height: 1.5;
+      margin-bottom: 0;
+    }
+
+    .plan-item {
+      background: #111827;
+      color: white;
+      border-radius: 12px;
+      padding: 16px;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: 0.2s ease;
+    }
+
+    .plan-item:hover {
+      transform: translateY(-1px);
+      background: #162033;
+    }
+
+    .plan-item.active {
+      border-color: #22c55e;
+      box-shadow: 0 0 0 1px rgba(34,197,94,0.2), 0 8px 20px rgba(0,0,0,.2);
+    }
+
+    .plans-right {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .preview-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 18px;
+    }
+
+    .preview-card {
+      background: linear-gradient(180deg, #111827, #0f172a);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+
+    .card-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #e5e7eb;
+      font-size: 14px;
+      margin-bottom: 14px;
+    }
+
+    .live-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #22c55e;
+      box-shadow: 0 0 10px #22c55e;
+    }
+
+    .mini-chart {
+      position: relative;
+      height: 220px;
+      border-radius: 14px;
+      background:
+        linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0/100% 44px,
+        linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0/44px 100%,
+        #0b1220;
+      overflow: hidden;
+    }
+
+    .chart-line {
+      position: absolute;
+      left: 20px;
+      right: 20px;
+      top: 40px;
+      bottom: 30px;
+    }
+
+    .chart-line::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-bottom: 3px solid #22c55e;
+      border-right: 3px solid transparent;
+      clip-path: polygon(
+        0% 78%, 10% 70%, 20% 72%, 30% 55%, 40% 60%, 50% 35%,
+        60% 42%, 70% 20%, 80% 32%, 90% 18%, 100% 5%
+      );
+    }
+
+    .chart-label {
+      position: absolute;
+      right: 14px;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      color: #e5e7eb;
+    }
+
+    .chart-label-top { top: 18px; }
+    .chart-label-mid { top: 96px; }
+    .chart-label-low { bottom: 18px; }
+
+    .signal-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .signal-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      align-items: center;
+      background: #0b1220;
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 14px;
+    }
+
+    .signal-row span {
+      color: #4ade80;
+      font-weight: bold;
+    }
+
+    .signal-row small {
+      color: #cbd5e1;
+    }
+
+    .premium-detail {
+      background: linear-gradient(180deg, #111827, #0f172a);
+      border-radius: 18px;
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: start;
+      margin-bottom: 18px;
+    }
+
+    .plan-tagline {
+      color: #cbd5e1;
+      margin-top: 8px;
+    }
+
+    .price-box {
+      text-align: right;
+      min-width: 140px;
+    }
+
+    .price-main {
+      font-size: 30px;
+      font-weight: bold;
+      color: #ffffff;
+    }
+
+    .price-sub {
+      color: #94a3b8;
+      font-size: 13px;
+    }
+
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+
+    .stat-box {
+      background: #0b1220;
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .stat-label {
+      display: block;
+      font-size: 12px;
+      color: #94a3b8;
+      margin-bottom: 6px;
+    }
+
+    .detail-sections {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    .features-list ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .features-list li {
+      margin-bottom: 8px;
+      color: #e5e7eb;
+    }
+
+    @media (max-width: 1000px) {
+      .plans-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .preview-grid,
+      .detail-sections {
+        grid-template-columns: 1fr;
+      }
+
+      .detail-header {
+        flex-direction: column;
+      }
+
+      .price-box {
+        text-align: left;
+      }
+
+      .stats-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- LOGIN -->
+  <section id="screen-login" class="screen light active">
+    <div class="card">
+      <h2>Login</h2>
+      <input id="loginEmail" type="email" placeholder="Email" />
+      <div class="password-wrap">
+        <input id="loginPassword" type="password" placeholder="Password" />
+        <span class="toggle-eye" onclick="togglePassword('loginPassword', this)">👁️</span>
+      </div>
+      <button id="loginBtn" class="btn-success" onclick="login()">Login</button>
+      <button class="btn-primary" onclick="showScreen('screen-signup')">Create account</button>
+      <button class="btn-danger" onclick="showScreen('screen-forgot')">Forgot password</button>
+      <div id="loginMsg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- SIGNUP -->
+  <section id="screen-signup" class="screen light">
+    <div class="card">
+      <h2>Create account</h2>
+
+      <input id="signupName" type="text" placeholder="Full name" />
+
+      <div class="row">
+        <select id="signupCountry">
+          <option value="">Select country</option>
+          <option value="BR" data-ddi="+55">Brazil (+55)</option>
+          <option value="US" data-ddi="+1">United States (+1)</option>
+          <option value="PT" data-ddi="+351">Portugal (+351)</option>
+          <option value="ES" data-ddi="+34">Spain (+34)</option>
+          <option value="IT" data-ddi="+39">Italy (+39)</option>
+        </select>
+
+        <input id="signupDdi" type="text" placeholder="DDI" readonly />
+      </div>
+
+      <input id="signupPhone" type="text" placeholder="WhatsApp / mobile number" />
+      <input id="signupEmail" type="email" placeholder="Email" />
+
+      <div class="password-wrap">
+        <input id="signupPassword" type="password" placeholder="Password" />
+        <span class="toggle-eye" onclick="togglePassword('signupPassword', this)">👁️</span>
+      </div>
+
+      <div class="password-wrap">
+        <input id="signupPassword2" type="password" placeholder="Confirm password" />
+        <span class="toggle-eye" onclick="togglePassword('signupPassword2', this)">👁️</span>
+      </div>
+
+      <button id="signupBtn" class="btn-success" onclick="signup()">Create account</button>
+      <button class="btn-dark" onclick="showScreen('screen-login')">Back to login</button>
+      <div id="signupMsg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- VERIFY -->
+  <section id="screen-verify" class="screen light">
+    <div class="card">
+      <h2>Check your email</h2>
+      <p>We sent you a confirmation link. After confirming, continue.</p>
+      <button class="btn-success" onclick="goToPlans()">I confirmed my email</button>
+      <button class="btn-dark" onclick="showScreen('screen-login')">Back to login</button>
+      <div id="verifyMsg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- FORGOT -->
+  <section id="screen-forgot" class="screen light">
+    <div class="card">
+      <h2>Forgot password</h2>
+      <input id="forgotEmail" type="email" placeholder="Enter your email" />
+      <button id="forgotBtn" class="btn-success" onclick="forgotPassword()">Send reset link</button>
+      <button class="btn-dark" onclick="showScreen('screen-login')">Back to login</button>
+      <div id="forgotMsg" class="msg"></div>
+    </div>
+  </section>
+
+  <!-- PLANS -->
+  <section id="screen-plans" class="screen">
+    <div class="plans-layout">
+      <div class="plans-left">
+        <div class="brand-card">
+          <div class="brand-badge">ORION RADAR PRO</div>
+          <h1>Choose your plan</h1>
+          <p class="brand-subtitle">
+            Real-time intelligence for traders who want speed, structure and clarity.
+          </p>
+        </div>
+
+        <div class="plan-item" id="plan-bronze" onclick="selectPlan('bronze', this)">Bronze</div>
+        <div class="plan-item" id="plan-silver" onclick="selectPlan('silver', this)">Silver</div>
+        <div class="plan-item" id="plan-gold" onclick="selectPlan('gold', this)">Gold</div>
+        <div class="plan-item" id="plan-platinum" onclick="selectPlan('platinum', this)">Platinum</div>
+      </div>
+
+      <div class="plans-right">
+        <div class="preview-grid">
+          <div class="preview-card chart-card">
+            <div class="card-top">
+              <span class="live-dot"></span>
+              <span>Live market preview</span>
+            </div>
+            <div class="mini-chart">
+              <div class="chart-line"></div>
+              <div class="chart-label chart-label-top">TP2</div>
+              <div class="chart-label chart-label-mid">Entry</div>
+              <div class="chart-label chart-label-low">SL</div>
+            </div>
+          </div>
+
+          <div class="preview-card feed-card">
+            <div class="card-top">
+              <span class="live-dot"></span>
+              <span>Signals feed</span>
+            </div>
+            <div class="signal-feed">
+              <div class="signal-row">
+                <strong>XAUUSD</strong>
+                <span>BUY</span>
+                <small>score 91</small>
+              </div>
+              <div class="signal-row">
+                <strong>US100</strong>
+                <span>SELL</span>
+                <small>score 84</small>
+              </div>
+              <div class="signal-row">
+                <strong>EURUSD</strong>
+                <span>BUY</span>
+                <small>score 79</small>
+              </div>
+              <div class="signal-row">
+                <strong>BTCUSD</strong>
+                <span>BUY</span>
+                <small>score 88</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="plan-detail premium-detail">
+          <div class="detail-header">
+            <div>
+              <h2 id="planTitle">Select a plan</h2>
+              <p id="planTagline" class="plan-tagline">Choose on the left to see the full breakdown.</p>
+            </div>
+            <div class="price-box">
+              <div id="planPrice" class="price-main">--</div>
+              <div class="price-sub">monthly</div>
+            </div>
+          </div>
+
+          <div class="stats-row">
+            <div class="stat-box">
+              <span class="stat-label">Assets</span>
+              <strong id="planAssets">--</strong>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Signal speed</span>
+              <strong id="planSpeed">--</strong>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Timeframes</span>
+              <strong id="planTf">--</strong>
+            </div>
+          </div>
+
+          <div class="detail-sections">
+            <div>
+              <h3>What you get</h3>
+              <div id="planFeatures" class="features-list">Select a plan to view features.</div>
+            </div>
+
+            <div>
+              <h3>Ideal for</h3>
+              <p id="planIdeal" class="muted">Select a plan to view the ideal user profile.</p>
+            </div>
+          </div>
+
+          <button id="checkoutBtn" class="btn-success" onclick="startCheckout()">Continue with this plan</button>
+          <button class="btn-dark" onclick="showScreen('screen-login')">Back to login</button>
+          <div id="plansMsg" class="msg"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DASHBOARD -->
+  <section id="screen-dashboard" class="screen">
+    <div class="card" style="max-width:700px;">
+      <h2>Dashboard</h2>
+      <p id="dashUser"></p>
+      <p id="dashPlan"></p>
+      <pre id="dashProfile"></pre>
+      <div class="row">
+        <button class="btn-primary" onclick="loadProfile()">Refresh profile</button>
+        <button class="btn-danger" onclick="logout()">Logout</button>
+      </div>
+      <div id="dashMsg" class="msg"></div>
+    </div>
+  </section>
+
+  <script>
+    const SUPABASE_URL = "https://eyawmevqfeaeioistrqk.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5YXdtZXZxZmVhZWlvaXN0cnFrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwNjE3MDMsImV4cCI6MjA4OTYzNzcwM30.zFT0i5XKwYEbtF6oWKdBtSNvDI8mo48zy-ucsVTWOoQ";
+    const BACKEND_URL = "https://orion-radar-backend.onrender.com";
+
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    let selectedPlan = null;
+
+    function setMsg(id, text, color = "#cbd5e1") {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.style.color = color;
+    }
+
+    function clearFields(...ids) {
+      ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+      });
+    }
+
+    function clearAllMessages() {
+      [
+        "loginMsg",
+        "signupMsg",
+        "verifyMsg",
+        "forgotMsg",
+        "plansMsg",
+        "dashMsg"
+      ].forEach(id => setMsg(id, ""));
+    }
+
+    function togglePassword(inputId, el) {
+      const input = document.getElementById(inputId);
+      if (input.type === "password") {
+        input.type = "text";
+        el.textContent = "🙈";
+      } else {
+        input.type = "password";
+        el.textContent = "👁️";
+      }
+    }
+
+    function getSignupDraft() {
+      try {
+        return JSON.parse(localStorage.getItem("orion_signup_draft") || "{}");
+      } catch {
+        return {};
+      }
+    }
+
+    function saveSignupDraft() {
+      const draft = {
+        full_name: document.getElementById("signupName").value.trim(),
+        country: document.getElementById("signupCountry").value,
+        ddi: document.getElementById("signupDdi").value.trim(),
+        phone: document.getElementById("signupPhone").value.trim(),
+        email: document.getElementById("signupEmail").value.trim()
+      };
+
+      localStorage.setItem("orion_signup_draft", JSON.stringify(draft));
+    }
+
+    function loadSignupDraft() {
+      const draft = getSignupDraft();
+      if (!draft) return;
+
+      if (draft.full_name) document.getElementById("signupName").value = draft.full_name;
+      if (draft.country) document.getElementById("signupCountry").value = draft.country;
+      if (draft.ddi) document.getElementById("signupDdi").value = draft.ddi;
+      if (draft.phone) document.getElementById("signupPhone").value = draft.phone;
+      if (draft.email) document.getElementById("signupEmail").value = draft.email;
+    }
+
+    function clearSignupDraft() {
+      localStorage.removeItem("orion_signup_draft");
+    }
+
+    function showScreen(screenId) {
+      document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+      document.getElementById(screenId).classList.add("active");
+      clearAllMessages();
+
+      clearFields(
+        "loginEmail", "loginPassword",
+        "signupPassword", "signupPassword2",
+        "forgotEmail"
+      );
+
+      if (screenId === "screen-signup") {
+        document.getElementById("signupName").value = "";
+        document.getElementById("signupCountry").value = "";
+        document.getElementById("signupDdi").value = "";
+        document.getElementById("signupPhone").value = "";
+        document.getElementById("signupEmail").value = "";
+        loadSignupDraft();
+      }
+    }
+
+    function checkExistingDraftByEmail() {
+      const loginEmail = document.getElementById("loginEmail").value.trim().toLowerCase();
+      const draft = getSignupDraft();
+
+      if (draft.email && draft.email.toLowerCase() === loginEmail) {
+        setMsg("loginMsg", "There is a registration in progress for this email.", "#f59e0b");
+      } else {
+        setMsg("loginMsg", "");
+      }
+    }
+
+    document.getElementById("signupCountry").addEventListener("change", function () {
+      const selected = this.options[this.selectedIndex];
+      const ddi = selected.getAttribute("data-ddi") || "";
+      document.getElementById("signupDdi").value = ddi;
+      saveSignupDraft();
+    });
+
+    ["signupName", "signupPhone", "signupEmail"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener("input", saveSignupDraft);
+        el.addEventListener("change", saveSignupDraft);
+      }
+    });
+
+    document.getElementById("loginEmail").addEventListener("input", checkExistingDraftByEmail);
+
+    async function withTimeout(promise, ms = 20000) {
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Request timed out. Try again.")), ms);
+      });
+
+      try {
+        return await Promise.race([promise, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function signup() {
+      const btn = document.getElementById("signupBtn");
+      try {
+        const fullName = document.getElementById("signupName").value.trim();
+        const country = document.getElementById("signupCountry").value;
+        const ddi = document.getElementById("signupDdi").value.trim();
+        const phoneNumber = document.getElementById("signupPhone").value.trim();
+        const email = document.getElementById("signupEmail").value.trim();
+        const password = document.getElementById("signupPassword").value;
+        const password2 = document.getElementById("signupPassword2").value;
+
+        if (!fullName || !country || !ddi || !phoneNumber || !email || !password || !password2) {
+          setMsg("signupMsg", "Fill all fields.", "#f87171");
+          return;
+        }
+
+        if (password !== password2) {
+          setMsg("signupMsg", "Passwords do not match.", "#f87171");
+          return;
+        }
+
+        const fullPhone = ddi + " " + phoneNumber;
+
+        btn.disabled = true;
+        setMsg("signupMsg", "Creating account...", "#cbd5e1");
+
+        const result = await withTimeout(
+          supabaseClient.auth.signUp({
+            email,
+            password,
+            options: {
+              data: {
+                full_name: fullName,
+                country: country,
+                phone: fullPhone
+              }
+            }
+          }),
+          20000
+        );
+
+        if (result.error) {
+          setMsg("signupMsg", result.error.message, "#f87171");
+          return;
+        }
+
+        clearSignupDraft();
+        setMsg("signupMsg", "Account created.", "#4ade80");
+        showScreen("screen-verify");
+      } catch (err) {
+        setMsg("signupMsg", err.message || "Signup failed.", "#f87171");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function goToPlans() {
+      showScreen("screen-plans");
+    }
+
+    function selectPlan(plan, el) {
+      selectedPlan = plan;
+
+      document.querySelectorAll(".plan-item").forEach(item => item.classList.remove("active"));
+      el.classList.add("active");
+
+      const details = {
+        bronze: {
+          title: "Bronze",
+          tagline: "A simple starting point for users who want basic market visibility.",
+          price: "$29",
+          assets: "Basic set",
+          speed: "Standard",
+          tf: "Main TFs",
+          ideal: "Best for beginners who want entry-level access to ORION signals without advanced layers.",
+          features: [
+            "Basic market signals",
+            "Starter access to selected assets",
+            "Entry-level monitoring dashboard",
+            "Standard signal delivery",
+            "Ideal for learning the system"
+          ]
+        },
+        silver: {
+          title: "Silver",
+          tagline: "More market coverage for users who want stronger monitoring and more opportunities.",
+          price: "$59",
+          assets: "Expanded set",
+          speed: "Faster",
+          tf: "Multi TF",
+          ideal: "Best for developing users who want more assets, more market coverage and a stronger daily workflow.",
+          features: [
+            "Everything in Bronze",
+            "More assets unlocked",
+            "Improved signal coverage",
+            "Faster feed visibility",
+            "Better market scanning depth"
+          ]
+        },
+        gold: {
+          title: "Gold",
+          tagline: "Advanced signal structure for users who want stronger execution and more precision.",
+          price: "$99",
+          assets: "Advanced set",
+          speed: "High priority",
+          tf: "Advanced TFs",
+          ideal: "Best for active traders who want advanced confirmations, stronger setups and more execution-ready signals.",
+          features: [
+            "Everything in Silver",
+            "Advanced signal structures",
+            "Priority features unlocked",
+            "More precision-focused setups",
+            "Better trade opportunity filtering"
+          ]
+        },
+        platinum: {
+          title: "Platinum",
+          tagline: "Full ORION RADAR experience with maximum access, premium signals and top-tier visibility.",
+          price: "$129",
+          assets: "Full access",
+          speed: "Real-time",
+          tf: "All TFs",
+          ideal: "Best for serious users who want the complete ORION RADAR experience with premium access and full system visibility.",
+          features: [
+            "Everything in Gold",
+            "All premium features unlocked",
+            "Full signal access",
+            "Real-time feed priority",
+            "Maximum visibility across the ORION system",
+            "Best plan for complete monitoring"
+          ]
+        }
+      };
+
+      const d = details[plan];
+      document.getElementById("planTitle").textContent = d.title;
+      document.getElementById("planTagline").textContent = d.tagline;
+      document.getElementById("planPrice").textContent = d.price;
+      document.getElementById("planAssets").textContent = d.assets;
+      document.getElementById("planSpeed").textContent = d.speed;
+      document.getElementById("planTf").textContent = d.tf;
+      document.getElementById("planIdeal").textContent = d.ideal;
+      document.getElementById("planFeatures").innerHTML =
+        "<ul>" + d.features.map(f => "<li>" + f + "</li>").join("") + "</ul>";
+    }
+
+    async function startCheckout() {
+      const btn = document.getElementById("checkoutBtn");
+      try {
+        if (!selectedPlan) {
+          setMsg("plansMsg", "Select a plan first.", "#f87171");
+          return;
+        }
+
+        const { data: authData } = await withTimeout(supabaseClient.auth.getUser(), 15000);
+        const user = authData?.user;
+
+        if (!user) {
+          setMsg("plansMsg", "You need to log in first.", "#f87171");
+          return;
+        }
+
+        btn.disabled = true;
+        setMsg("plansMsg", "Creating checkout...", "#cbd5e1");
+
+        const res = await withTimeout(
+          fetch(BACKEND_URL + "/create-checkout-session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              plan: selectedPlan,
+              userId: user.id,
+              email: user.email
+            })
+          }),
+          25000
+        );
+
+        const json = await res.json();
+
+        if (!res.ok) {
+          setMsg("plansMsg", json.error || "Checkout error.", "#f87171");
+          return;
+        }
+
+        if (!json.url) {
+          setMsg("plansMsg", "Checkout URL not returned.", "#f87171");
+          return;
+        }
+
+        window.location.href = json.url;
+      } catch (err) {
+        setMsg("plansMsg", err.message || "Checkout failed.", "#f87171");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function login() {
+      const btn = document.getElementById("loginBtn");
+      try {
+        const email = document.getElementById("loginEmail").value.trim();
+        const password = document.getElementById("loginPassword").value;
+
+        if (!email || !password) {
+          setMsg("loginMsg", "Enter email and password.", "#f87171");
+          return;
+        }
+
+        btn.disabled = true;
+        setMsg("loginMsg", "Logging in...", "#cbd5e1");
+
+        const result = await withTimeout(
+          supabaseClient.auth.signInWithPassword({ email, password }),
+          20000
+        );
+
+        if (result.error) {
+          if (result.error.message.toLowerCase().includes("email not confirmed")) {
+            setMsg("loginMsg", "Your email is not confirmed yet. Check your inbox.", "#f87171");
+            return;
+          }
+
+          setMsg("loginMsg", result.error.message, "#f87171");
+          return;
+        }
+
+        clearFields("loginEmail", "loginPassword");
+        await loadProfile();
+      } catch (err) {
+        setMsg("loginMsg", err.message || "Login failed.", "#f87171");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function forgotPassword() {
+      const btn = document.getElementById("forgotBtn");
+      try {
+        const email = document.getElementById("forgotEmail").value.trim();
+
+        if (!email) {
+          setMsg("forgotMsg", "Enter your email.", "#f87171");
+          return;
+        }
+
+        btn.disabled = true;
+
+        const result = await withTimeout(
+          supabaseClient.auth.resetPasswordForEmail(email, {
+            redirectTo: "https://orion-radar-backend.onrender.com/reset-password"
+          }),
+          20000
+        );
+
+        if (result.error) {
+          setMsg("forgotMsg", result.error.message, "#f87171");
+          return;
+        }
+
+        clearFields("forgotEmail");
+        setMsg("forgotMsg", "Reset link sent.", "#4ade80");
+      } catch (err) {
+        setMsg("forgotMsg", err.message || "Reset failed.", "#f87171");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadProfile() {
+      try {
+        const { data } = await withTimeout(supabaseClient.auth.getUser(), 15000);
+        const user = data?.user;
+
+        if (!user) {
+          setMsg("loginMsg", "No authenticated user.", "#f87171");
+          showScreen("screen-login");
+          return;
+        }
+
+        const res = await withTimeout(fetch(BACKEND_URL + "/debug-profile/" + user.id), 20000);
+        const json = await res.json();
+
+        if (!res.ok) {
+          setMsg("dashMsg", json.error || "Could not load profile.", "#f87171");
+          showScreen("screen-dashboard");
+          return;
+        }
+
+        document.getElementById("dashUser").textContent = "User: " + user.email;
+        document.getElementById("dashPlan").textContent =
+          "Plan: " + (json.profile?.active_plan || "none") +
+          " | Status: " + (json.profile?.billing_status || "inactive");
+        document.getElementById("dashProfile").textContent = JSON.stringify(json.profile, null, 2);
+
+        showScreen("screen-dashboard");
+      } catch (err) {
+        setMsg("dashMsg", err.message || "Profile load failed.", "#f87171");
+        showScreen("screen-dashboard");
+      }
+    }
+
+    async function logout() {
+      await supabaseClient.auth.signOut();
+      showScreen("screen-login");
+    }
+
+    supabaseClient.auth.getSession().then(result => {
+      if (result?.data?.session) {
+        loadProfile();
+      }
+    });
+  </script>
+</body>
+</html>

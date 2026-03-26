@@ -19,6 +19,7 @@ const {
   STRIPE_PRICE_SILVER,
   STRIPE_PRICE_GOLD,
   STRIPE_PRICE_PLATINUM,
+  SUPABASE_ANON_KEY,
 } = process.env;
 
 if (!FRONTEND_URL) throw new Error("Missing FRONTEND_URL");
@@ -198,18 +199,6 @@ async function saveProfileBilling({
     updated_at: new Date().toISOString(),
   };
 
-  console.log("saveProfileBilling -> resolved profile:", existing?.id || null);
-  console.log("saveProfileBilling -> incoming:", {
-    userId: normalizedUserId,
-    email: normalizedEmail,
-    stripeCustomerId: normalizedCustomerId,
-    stripeSubscriptionId: normalizedSubscriptionId,
-    selectedPlan,
-    activePlan,
-    billingStatus,
-    stripePriceId: normalizedPriceId,
-  });
-
   if (existing?.id) {
     const { data, error } = await supabase
       .from("profiles")
@@ -217,9 +206,6 @@ async function saveProfileBilling({
       .eq("id", existing.id)
       .select()
       .single();
-
-    console.log("saveProfileBilling -> update result:", data);
-    console.log("saveProfileBilling -> update error:", error);
 
     if (error) throw error;
     return data;
@@ -240,16 +226,25 @@ async function saveProfileBilling({
     .select()
     .single();
 
-  console.log("saveProfileBilling -> insert result:", data);
-  console.log("saveProfileBilling -> insert error:", error);
-
   if (error) throw error;
   return data;
 }
 
+const allowedOrigins = new Set([
+  FRONTEND_URL,
+  "http://localhost:8000",
+  "http://127.0.0.1:8000",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]);
+
 app.use(
   cors({
-    origin: [FRONTEND_URL],
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.has(origin)) return callback(null, true);
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
   })
 );
@@ -271,8 +266,8 @@ app.get("/billing/success", (req, res) => {
   res.send(`
     <html>
       <body style="font-family: Arial, sans-serif; padding: 40px;">
-        <h1>Pagamento realizado com sucesso</h1>
-        <p>Sua assinatura foi processada.</p>
+        <h1>Payment completed successfully</h1>
+        <p>Your subscription has been processed.</p>
         <p>Session ID: ${sessionId}</p>
       </body>
     </html>
@@ -283,8 +278,8 @@ app.get("/billing/cancel", (_req, res) => {
   res.send(`
     <html>
       <body style="font-family: Arial, sans-serif; padding: 40px;">
-        <h1>Pagamento cancelado</h1>
-        <p>Você pode tentar novamente quando quiser.</p>
+        <h1>Payment canceled</h1>
+        <p>You can try again whenever you want.</p>
       </body>
     </html>
   `);
@@ -300,6 +295,7 @@ app.get("/debug-env", (_req, res) => {
     has_webhook_secret: !!process.env.STRIPE_WEBHOOK_SECRET,
   });
 });
+
 app.get("/debug-profile/:id", async (req, res) => {
   try {
     const profile = await findProfileByUserId(req.params.id);
@@ -307,6 +303,120 @@ app.get("/debug-profile/:id", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get("/reset-password", (_req, res) => {
+  res.send(`
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Reset Password</title>
+      <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          background: #0f172a;
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 100vh;
+          margin: 0;
+        }
+        .box {
+          background: #111827;
+          padding: 24px;
+          border-radius: 16px;
+          width: 100%;
+          max-width: 420px;
+          box-shadow: 0 10px 30px rgba(0,0,0,.35);
+        }
+        h1 { margin-top: 0; font-size: 24px; }
+        p { color: #cbd5e1; }
+        input {
+          width: 100%;
+          padding: 12px;
+          margin: 8px 0 16px;
+          border-radius: 10px;
+          border: 1px solid #334155;
+          background: #0b1220;
+          color: white;
+          box-sizing: border-box;
+        }
+        button {
+          width: 100%;
+          padding: 12px;
+          border: 0;
+          border-radius: 10px;
+          background: #22c55e;
+          color: white;
+          font-weight: bold;
+          cursor: pointer;
+        }
+        .msg { margin-top: 16px; font-size: 14px; }
+        .ok { color: #4ade80; }
+        .err { color: #f87171; }
+      </style>
+    </head>
+    <body>
+      <div class="box">
+        <h1>Reset your password</h1>
+        <p>Enter your new password below.</p>
+        <form id="resetForm">
+          <input id="password" type="password" placeholder="New password" required />
+          <input id="confirmPassword" type="password" placeholder="Confirm new password" required />
+          <button type="submit">Update password</button>
+        </form>
+        <div id="msg" class="msg"></div>
+      </div>
+
+      <script>
+        const supabaseUrl = ${JSON.stringify(process.env.SUPABASE_URL)};
+        const supabaseAnonKey = ${JSON.stringify(process.env.SUPABASE_ANON_KEY || "")};
+        const msg = document.getElementById("msg");
+        const form = document.getElementById("resetForm");
+
+        if (!supabaseUrl || !supabaseAnonKey) {
+          msg.className = "msg err";
+          msg.textContent = "Missing SUPABASE_URL or SUPABASE_ANON_KEY on server.";
+        } else {
+          const client = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+
+          form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const password = document.getElementById("password").value;
+            const confirmPassword = document.getElementById("confirmPassword").value;
+
+            if (password !== confirmPassword) {
+              msg.className = "msg err";
+              msg.textContent = "Passwords do not match.";
+              return;
+            }
+
+            if (password.length < 6) {
+              msg.className = "msg err";
+              msg.textContent = "Password must be at least 6 characters.";
+              return;
+            }
+
+            const { error } = await client.auth.updateUser({ password });
+
+            if (error) {
+              msg.className = "msg err";
+              msg.textContent = error.message;
+              return;
+            }
+
+            msg.className = "msg ok";
+            msg.textContent = "Password updated successfully. You can log in now.";
+          });
+        }
+      </script>
+    </body>
+    </html>
+  `);
 });
 
 app.post(
@@ -328,10 +438,6 @@ app.post(
     }
 
     try {
-      console.log("==== STRIPE WEBHOOK ====");
-      console.log("event.type:", event.type);
-      console.log("event.id:", event.id);
-
       switch (event.type) {
         case "checkout.session.completed": {
           const session = event.data.object;
@@ -370,17 +476,6 @@ app.post(
             activePlan = selectedPlan;
           }
 
-          console.log("checkout.session.completed payload:", {
-            userId,
-            email,
-            selectedPlan,
-            activePlan,
-            billingStatus,
-            customerId,
-            subscriptionId,
-            stripePriceId,
-          });
-
           await saveProfileBilling({
             userId,
             email,
@@ -412,16 +507,6 @@ app.post(
             normalizePlan(subscription.metadata?.plan) ||
             getPlanFromPriceId(stripePriceId);
 
-          console.log("customer.subscription event payload:", {
-            userIdFromMetadata,
-            emailFromMetadata,
-            activePlan,
-            customerId,
-            subscriptionId,
-            stripePriceId,
-            status: subscription.status,
-          });
-
           await saveProfileBilling({
             userId: userIdFromMetadata,
             email: emailFromMetadata,
@@ -446,13 +531,6 @@ app.post(
           const subscriptionId = safeStr(subscription.id);
           const userIdFromMetadata = safeStr(subscription.metadata?.user_id);
           const emailFromMetadata = safeStr(subscription.metadata?.email);
-
-          console.log("customer.subscription.deleted payload:", {
-            userIdFromMetadata,
-            emailFromMetadata,
-            customerId,
-            subscriptionId,
-          });
 
           await saveProfileBilling({
             userId: userIdFromMetadata,
@@ -484,8 +562,6 @@ app.post(
             stripeCustomerId: customerId,
             stripeSubscriptionId: subscriptionId,
           });
-
-          console.log("invoice.payment_failed resolved profile:", profile?.id || null);
 
           if (profile) {
             await saveProfileBilling({
@@ -579,8 +655,6 @@ app.post("/create-checkout-session", async (req, res) => {
       email: normalizedEmail,
       plan: normalizedPlan,
     };
-
-    console.log("create-checkout-session metadata:", metadata);
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -722,123 +796,6 @@ app.post("/sync-subscription", async (req, res) => {
     });
   }
 });
-
-app.get("/reset-password", (_req, res) => {
-  res.send(`
-    <!doctype html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>Reset Password</title>
-      <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          background: #0f172a;
-          color: white;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          min-height: 100vh;
-          margin: 0;
-        }
-        .box {
-          background: #111827;
-          padding: 24px;
-          border-radius: 16px;
-          width: 100%;
-          max-width: 420px;
-          box-shadow: 0 10px 30px rgba(0,0,0,.35);
-        }
-        h1 { margin-top: 0; font-size: 24px; }
-        p { color: #cbd5e1; }
-        input {
-          width: 100%;
-          padding: 12px;
-          margin: 8px 0 16px;
-          border-radius: 10px;
-          border: 1px solid #334155;
-          background: #0b1220;
-          color: white;
-          box-sizing: border-box;
-        }
-        button {
-          width: 100%;
-          padding: 12px;
-          border: 0;
-          border-radius: 10px;
-          background: #22c55e;
-          color: white;
-          font-weight: bold;
-          cursor: pointer;
-        }
-        .msg { margin-top: 16px; font-size: 14px; }
-        .ok { color: #4ade80; }
-        .err { color: #f87171; }
-      </style>
-    </head>
-    <body>
-      <div class="box">
-        <h1>Reset your password</h1>
-        <p>Enter your new password below.</p>
-        <form id="resetForm">
-          <input id="password" type="password" placeholder="New password" required />
-          <input id="confirmPassword" type="password" placeholder="Confirm new password" required />
-          <button type="submit">Update password</button>
-        </form>
-        <div id="msg" class="msg"></div>
-      </div>
-
-      <script>
-        const supabaseUrl = ${JSON.stringify(process.env.SUPABASE_URL)};
-        const supabaseAnonKey = ${JSON.stringify(process.env.SUPABASE_ANON_KEY || "")};
-
-        const msg = document.getElementById("msg");
-        const form = document.getElementById("resetForm");
-
-        if (!supabaseUrl || !supabaseAnonKey) {
-          msg.className = "msg err";
-          msg.textContent = "Missing SUPABASE_URL or SUPABASE_ANON_KEY on server.";
-        } else {
-          const client = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
-
-          form.addEventListener("submit", async (e) => {
-            e.preventDefault();
-
-            const password = document.getElementById("password").value;
-            const confirmPassword = document.getElementById("confirmPassword").value;
-
-            if (password !== confirmPassword) {
-              msg.className = "msg err";
-              msg.textContent = "Passwords do not match.";
-              return;
-            }
-
-            if (password.length < 6) {
-              msg.className = "msg err";
-              msg.textContent = "Password must be at least 6 characters.";
-              return;
-            }
-
-            const { error } = await client.auth.updateUser({ password });
-
-            if (error) {
-              msg.className = "msg err";
-              msg.textContent = error.message;
-              return;
-            }
-
-            msg.className = "msg ok";
-            msg.textContent = "Password updated successfully. You can log in now.";
-          });
-        }
-      </script>
-    </body>
-    </html>
-  `);
-});
-
 
 app.listen(PORT, () => {
   console.log(`ORION RADAR PRO API running on port ${PORT}`);

@@ -15,11 +15,11 @@ const {
   STRIPE_WEBHOOK_SECRET,
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
+  SUPABASE_ANON_KEY,
   STRIPE_PRICE_BRONZE,
   STRIPE_PRICE_SILVER,
   STRIPE_PRICE_GOLD,
   STRIPE_PRICE_PLATINUM,
-  SUPABASE_ANON_KEY,
 } = process.env;
 
 if (!FRONTEND_URL) throw new Error("Missing FRONTEND_URL");
@@ -236,6 +236,7 @@ const allowedOrigins = new Set([
   "http://127.0.0.1:8000",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "https://orionradar.netlify.app",
 ]);
 
 app.use(
@@ -302,6 +303,74 @@ app.get("/debug-profile/:id", async (req, res) => {
     res.json({ profile });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/check-email-status", async (req, res) => {
+  try {
+    const email = safeStr(req.query.email);
+
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
+    let authExists = false;
+    let profileExists = false;
+
+    let page = 1;
+    const perPage = 200;
+
+    while (true) {
+      const { data, error } = await supabase.auth.admin.listUsers({
+        page,
+        perPage,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      const users = data?.users || [];
+      if (!users.length) break;
+
+      const found = users.find(
+        (u) => (u.email || "").trim().toLowerCase() === email.toLowerCase()
+      );
+
+      if (found) {
+        authExists = true;
+        break;
+      }
+
+      if (users.length < perPage) break;
+      page += 1;
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id,email")
+      .eq("email", email)
+      .maybeSingle();
+
+    if (profileError) {
+      throw profileError;
+    }
+
+    if (profile) {
+      profileExists = true;
+    }
+
+    return res.json({
+      exists: authExists || profileExists,
+      auth_exists: authExists,
+      profile_exists: profileExists,
+    });
+  } catch (err) {
+    console.error("check-email-status error:", err);
+    return res.status(500).json({
+      error: "Could not check email status",
+      details: err.message,
+    });
   }
 });
 
